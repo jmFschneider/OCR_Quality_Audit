@@ -18,7 +18,7 @@ The primary goal of this project is to create a tool that can systematically fin
 
 *   `test_scans/`: The input directory where users should place all the images they want to use for evaluating the OCR quality during an optimization run.
 
-## 3. Core Functionality
+## 3. Core Functionality & Performance
 
 The application evaluates a set of image processing parameters by running them against a collection of images and returns a score based on Tesseract's confidence. An optimizer (either Optuna or Scipy) then uses this score to suggest a new, better set of parameters.
 
@@ -26,15 +26,20 @@ The application evaluates a set of image processing parameters by running them a
 *   **Optuna**: Supports TPE, Sobol (QMC), and NSGA-II samplers.
 *   **Scipy**: Uses an initial set of points from a Sobol sequence and runs a local optimizer (e.g., L-BFGS-B, Nelder-Mead) from each point.
 
-### Performance Optimizations:
-To handle potentially slow evaluations, two key performance strategies have been implemented:
+### CPU Parallelization Management:
+To maximize performance on multi-core CPUs, the application parallelizes the evaluation of the image set.
+1.  **Dynamic Process Pool:** A `multiprocessing.Pool` is used to distribute the processing of each image to a different CPU core. The size of this pool is dynamically adjusted to `min(number_of_images, cpu_core_count)` to avoid creating unnecessary processes.
+2.  **Thread Oversubscription Prevention:** A major performance bottleneck was identified and resolved. To prevent the main multiprocessing pool from competing with the implicit multi-threading of underlying libraries (like OpenCV and Tesseract/OpenMP), each worker process is now forced to be single-threaded by setting environment variables (`OMP_NUM_THREADS=1`) and library-specific commands (`cv2.setNumThreads(1)`). This ensures efficient and predictable scaling on multi-core machines.
 
-1.  **Image Pre-loading:** At the start of an optimization, all images from the `test_scans` folder are loaded into RAM. This prevents the disk from being a bottleneck, as worker processes no longer need to read files.
-2.  **CPU Parallelization:** The evaluation of the image set is parallelized across all available CPU cores using Python's `multiprocessing` module. Each image in the pre-loaded set is assigned to a different core for processing.
+## 4. New Features (as of Nov 26, 2025)
 
-## 4. Current Status & Last Actions
+*   **Cancellable Optimizations:** A "Cancel" button in the GUI allows for gracefully stopping an ongoing optimization. Both Optuna and Scipy loops will be interrupted.
+*   **Automatic CSV Export:** At the end of every run (whether completed or cancelled), all tested parameters and their corresponding scores are automatically saved to a new, timestamped CSV file in the root directory (e.g., `optim_results_YYYYMMDD_HHMMSS.csv`).
+*   **GUI Enhancements:**
+    *   **Sobol Exponent Input:** For Scipy, the GUI now asks for an exponent (`m`) to calculate the number of Sobol points (`n=2^m`), ensuring the power-of-2 requirement is met for better sequence properties.
+    *   **Image Counter:** The UI now displays the number of images found in the `test_scans` directory and includes a refresh button.
+    *   **Robust Layout:** The main control bar's layout has been refactored using a `grid` geometry manager to prevent UI elements from disappearing or overlapping, providing a more stable user experience.
 
-*   The implementation of both Optuna and Scipy optimizers is complete.
-*   The performance bottleneck on multi-core CPUs was diagnosed and resolved by implementing the image pre-loading strategy, which prevents I/O contention.
-*   All project changes, including the creation of `scipy_optimizer.py` and the `README.md`, have been committed and pushed to the `main` branch of the remote GitHub repository.
-*   The project is considered functional and ready for use or further development.
+## 5. Current Status
+
+The project is functional. It has been significantly enhanced with the addition of cancellation, automatic saving, and major UI/performance fixes that allow it to scale properly on multi-core hardware. The code is ready for the next development steps or for use.

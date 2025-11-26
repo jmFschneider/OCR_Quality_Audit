@@ -79,6 +79,14 @@ def process_single_file_wrapper(args):
     Wrapper function to process a single file. Takes a tuple of (file_path, params)
     as input to be compatible with pool.starmap.
     """
+    # FORCER LE MONO-THREADING : Crucial pour les performances en multiprocessing.
+    # Empêche les bibliothèques sous-jacentes (OpenCV, Tesseract/OpenMP, MKL)
+    # de créer leurs propres threads, ce qui provoquerait une sur-sollicitation.
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    cv2.setNumThreads(1)
+
     file_path, params = args
     img = cv2.imread(file_path)
     if img is None:
@@ -102,9 +110,12 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
     with open(csv_filename, mode='w', newline='') as f:
         writer = csv.writer(f, delimiter=';')
         writer.writerow(csv_headers)
-    gui_app.update_log_from_thread(f"Log détaillé : {csv_filename}")
+    gui_app.update_log_from_thread(f"Log détaillé (legacy) : {csv_filename}")
 
     def objective(trial):
+        if gui_app.cancellation_requested.is_set():
+            raise optuna.exceptions.TrialPruned("Annulation demandée par l'utilisateur.")
+
         params = fixed_params.copy()
         
         # Build params dict for this trial
@@ -130,10 +141,14 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
                     row_data.append(params.get(header))
                 writer.writerow(row_data)
         except Exception as e: 
-            gui_app.update_log_from_thread(f"Erreur CSV: {e}")
+            gui_app.update_log_from_thread(f"Erreur CSV (legacy): {e}")
 
         gui_app.on_trial_finish(trial.number, avg_tess, avg_sharp, avg_cont, params)
         return avg_tess
+
+    def cancellation_callback(study, trial):
+        if gui_app.cancellation_requested.is_set():
+            study.stop()
 
     sampler_map = {
         "TPE (Bayésien)": TPESampler(n_startup_trials=20),
@@ -143,9 +158,14 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
     sampler = sampler_map.get(algo_choice, TPESampler())
     
     study = optuna.create_study(direction='maximize', sampler=sampler)
-    study.optimize(objective, n_trials=n_trials)
-    gui_app.update_status_from_thread(f"✅ Terminé ! Meilleur Tesseract : {study.best_value:.2f}%")
-    gui_app.enable_start_button()
+    study.optimize(objective, n_trials=n_trials, callbacks=[cancellation_callback])
+
+    if gui_app.cancellation_requested.is_set():
+        gui_app.update_status_from_thread("⏹️ Optuna annulé ! Sauvegarde des résultats...")
+    else:
+        gui_app.update_status_from_thread(f"✅ Optuna terminé ! Meilleur Tesseract : {study.best_value:.2f}%")
+    
+    gui_app.finalize_run()
 
 
 # --- GUI ---
@@ -166,11 +186,15 @@ class OptimizerGUI:
             'bin_block': (30, 100, 60), 'bin_c': (10, 25.0, 15.0)
         }
         self.param_enabled_vars = {name: tk.BooleanVar(value=True) for name in self.default_params}
+        self.cancellation_requested = threading.Event()
+        self.results_data = []
         
         self.optuna_algos = ["TPE (Bayésien)", "Sobol (Quasi-Monte Carlo)", "NSGA-II (Génétique)"]
         self.scipy_algos = ['Nelder-Mead', 'Powell', 'CG', 'BFGS', 'L-BFGS-B', 'TNC', 'COBYLA', 'SLSQP']
 
+        self.image_files = []
         self.create_widgets()
+        self.refresh_image_list()
 
     def create_widgets(self):
         style = ttk.Style()
@@ -200,33 +224,55 @@ class OptimizerGUI:
         ctrl_frame = ttk.LabelFrame(self.master, text="Configuration de l'Optimisation")
         ctrl_frame.pack(padx=10, pady=5, fill="x")
 
-        ttk.Label(ctrl_frame, text="Bibliothèque :").pack(side="left", padx=(5,0))
+        # --- Utilisation de GRID pour une disposition stable ---
+        ctrl_frame.columnconfigure(2, weight=1)
+
+        # Colonne 0: Bibliothèque
+        ttk.Label(ctrl_frame, text="Bibliothèque :").grid(row=0, column=0, sticky="w", padx=5)
         self.lib_var = tk.StringVar(value="Optuna")
         self.lib_combo = ttk.Combobox(ctrl_frame, textvariable=self.lib_var, state="readonly", width=10, values=["Optuna", "Scipy"])
-        self.lib_combo.pack(side="left", padx=(5,15))
+        self.lib_combo.grid(row=0, column=0, sticky="w", padx=(80,5))
         self.lib_combo.bind("<<ComboboxSelected>>", self.on_library_select)
         
-        ttk.Label(ctrl_frame, text="Algorithme :").pack(side="left", padx=5)
+        # Colonne 1: Algorithme
+        ttk.Label(ctrl_frame, text="Algorithme :").grid(row=0, column=1, sticky="w", padx=5)
         self.algo_var = tk.StringVar(value=self.optuna_algos[0])
         self.algo_combo = ttk.Combobox(ctrl_frame, textvariable=self.algo_var, state="readonly", width=25, values=self.optuna_algos)
-        self.algo_combo.pack(side="left", padx=5)
+        self.algo_combo.grid(row=0, column=1, sticky="w", padx=(70,5))
 
+        # Colonne 2: Options dynamiques (Frames non encore placées)
         self.optuna_frame = ttk.Frame(ctrl_frame)
-        self.optuna_frame.pack(side="left", padx=5)
-        ttk.Label(self.optuna_frame, text="Nb Essais :").pack(side="left", padx=(10,0))
+        ttk.Label(self.optuna_frame, text="Nb Essais :").pack(side="left")
         self.trials_entry = ttk.Entry(self.optuna_frame, width=8); self.trials_entry.insert(0, "100")
         self.trials_entry.pack(side="left", padx=5)
         
         self.scipy_frame = ttk.Frame(ctrl_frame)
-        ttk.Label(self.scipy_frame, text="Points Sobol:").pack(side="left", padx=(10,0))
-        self.sobol_points_entry = ttk.Entry(self.scipy_frame, width=8); self.sobol_points_entry.insert(0, "20")
-        self.sobol_points_entry.pack(side="left", padx=5)
-        ttk.Label(self.scipy_frame, text="Itérations/point:").pack(side="left", padx=(10,0))
+        ttk.Label(self.scipy_frame, text="Exposant Sobol (2^n):").pack(side="left")
+        self.sobol_exponent_var = tk.StringVar(value="5")
+        self.sobol_exponent_var.trace_add("write", self.update_sobol_points_label)
+        self.sobol_exponent_entry = ttk.Entry(self.scipy_frame, width=5, textvariable=self.sobol_exponent_var)
+        self.sobol_exponent_entry.pack(side="left", padx=2)
+        self.sobol_points_label = ttk.Label(self.scipy_frame, text="= 32 points")
+        self.sobol_points_label.pack(side="left", padx=(0,10))
+        ttk.Label(self.scipy_frame, text="Itérations/point:").pack(side="left")
         self.scipy_iter_entry = ttk.Entry(self.scipy_frame, width=8); self.scipy_iter_entry.insert(0, "15")
         self.scipy_iter_entry.pack(side="left", padx=5)
 
-        self.btn_start = ttk.Button(ctrl_frame, text="▶ LANCER", command=self.start_optimization)
-        self.btn_start.pack(side="right", padx=20)
+        # Colonne 3: Compteur d'images
+        img_frame = ttk.Frame(ctrl_frame)
+        img_frame.grid(row=0, column=3, sticky="e", padx=5)
+        self.image_count_label = ttk.Label(img_frame, text="Images: 0")
+        self.image_count_label.pack(side="left")
+        self.btn_refresh_images = ttk.Button(img_frame, text="🔄", width=3, command=self.refresh_image_list)
+        self.btn_refresh_images.pack(side="left", padx=5)
+
+        # Colonne 4: Boutons d'action
+        btn_frame = ttk.Frame(ctrl_frame)
+        btn_frame.grid(row=0, column=4, sticky="e", padx=5)
+        self.btn_start = ttk.Button(btn_frame, text="▶ LANCER", command=self.start_optimization)
+        self.btn_start.pack(side="left")
+        self.btn_cancel = ttk.Button(btn_frame, text="⏹ ANNULER", command=self.request_cancellation, state="disabled")
+        self.btn_cancel.pack(side="left", padx=5)
         
         self.status_label = ttk.Label(self.master, text="Prêt.", font=('Helvetica', 10, 'italic'))
         self.status_label.pack(pady=5)
@@ -237,17 +283,36 @@ class OptimizerGUI:
         self.on_library_select(None)
 
     def on_library_select(self, event):
+        # On cache d'abord les deux frames d'options
+        self.scipy_frame.grid_remove()
+        self.optuna_frame.grid_remove()
+
         lib = self.lib_var.get()
         if lib == "Optuna":
             self.algo_combo.config(values=self.optuna_algos)
             self.algo_var.set(self.optuna_algos[0])
-            self.optuna_frame.pack(side="left", padx=5)
-            self.scipy_frame.pack_forget()
+            self.optuna_frame.grid(row=0, column=2, sticky="w")
         else:
             self.algo_combo.config(values=self.scipy_algos)
             self.algo_var.set(self.scipy_algos[0])
-            self.scipy_frame.pack(side="left", padx=5)
-            self.optuna_frame.pack_forget()
+            self.scipy_frame.grid(row=0, column=2, sticky="w")
+
+
+    def update_sobol_points_label(self, *args):
+        try:
+            exponent = int(self.sobol_exponent_var.get())
+            if exponent > 16: # Limite pour éviter les très grands nombres
+                self.sobol_points_label.config(text="! > 65536")
+                return
+            n_points = 2**exponent
+            self.sobol_points_label.config(text=f"= {n_points} points")
+        except ValueError:
+            self.sobol_points_label.config(text="= Invalide")
+
+    def refresh_image_list(self):
+        """Met à jour la liste des fichiers image et l'affichage dans l'UI."""
+        self.image_files = glob(os.path.join(INPUT_FOLDER, '*.*'))
+        self.image_count_label.config(text=f"Images: {len(self.image_files)}")
 
     def get_optim_config(self):
         active_ranges = {}
@@ -271,14 +336,19 @@ class OptimizerGUI:
         return active_ranges, fixed_params, param_order
     
     def evaluate_pipeline(self, params):
-        fichiers = glob(os.path.join(INPUT_FOLDER, '*.*'))[:5] # Limit files for speed
-        
+        fichiers = self.image_files
+        if not fichiers:
+            return 0, 0, 0
+
         # Prepare arguments for the multiprocessing pool
         pool_args = zip(fichiers, repeat(params))
         
+        # --- DIAGNOSTIC --- Limiter la taille du pool au nombre de tâches si < cpu_count
+        pool_size = min(len(fichiers), os.cpu_count())
+        
         try:
-            # Create a pool of workers
-            with multiprocessing.Pool(os.cpu_count()) as pool:
+            # Create a pool of workers with a specific size
+            with multiprocessing.Pool(processes=pool_size) as pool:
                 results = pool.map(process_single_file_wrapper, pool_args)
             
             # Filter out None results from failed image reads
@@ -311,10 +381,17 @@ class OptimizerGUI:
             return avg_tess, avg_sharp, avg_cont
 
     def start_optimization(self):
-        active_ranges, fixed_params, param_order = self.get_optim_config()
-        if active_ranges is None: messagebox.showerror("Erreur de Saisie", "Vérifiez que les Min/Max sont des nombres valides."); return
-
+        self.cancellation_requested.clear()
+        self.results_data.clear()
         self.btn_start.config(state="disabled")
+        self.btn_cancel.config(state="normal")
+
+        active_ranges, fixed_params, param_order = self.get_optim_config()
+        if active_ranges is None: 
+            messagebox.showerror("Erreur de Saisie", "Vérifiez que les Min/Max sont des nombres valides.")
+            self.finalize_run()
+            return
+
         self.log_text.delete('1.0', tk.END)
         self.best_score_so_far = 0.0
         self.trial_count = 0
@@ -330,16 +407,19 @@ class OptimizerGUI:
                 thread.start()
             except ValueError: 
                 messagebox.showerror("Erreur de Saisie", "Le nombre d'essais doit être un entier.")
-                self.enable_start_button()
+                self.finalize_run()
         
         elif library == "Scipy":
             try:
-                n_sobol = int(self.sobol_points_entry.get())
+                exponent = int(self.sobol_exponent_var.get())
+                n_sobol = 2**exponent
                 n_iter = int(self.scipy_iter_entry.get())
                 bounds = [active_ranges[p] for p in param_order]
 
                 def objective_for_scipy(param_values):
                     # DEBUG print(f"DEBUG: Scipy objective called with {param_values}")
+                    if self.cancellation_requested.is_set(): return 0 # Stop early
+
                     self.trial_count += 1
                     params = fixed_params.copy()
                     current_params = {}
@@ -367,10 +447,17 @@ class OptimizerGUI:
 
             except ValueError:
                 messagebox.showerror("Erreur de Saisie", "Les points Sobol et Itérations doivent être des entiers.")
-                self.enable_start_button()
+                self.finalize_run()
 
     def run_scipy_thread(self, objective, bounds, algo, n_sobol, n_iter):
-        result = scipy_optimizer.run_scipy_optimization(objective, bounds, algo, n_sobol, n_iter, self.update_log_from_thread)
+        result = scipy_optimizer.run_scipy_optimization(objective, bounds, algo, n_sobol, n_iter, self.update_log_from_thread, self.cancellation_requested)
+        
+        # Si aucun résultat n'a été trouvé (par ex. annulation immédiate)
+        if result.get("x") is None:
+            self.update_status_from_thread("⏹️ Scipy annulé, aucun résultat à afficher.")
+            self.finalize_run()
+            return
+
         best_params_values = result.x
         
         # Reconstruct the full params dict to display it
@@ -378,6 +465,9 @@ class OptimizerGUI:
         final_params = fixed_params.copy()
         current_params = {}
         for i, name in enumerate(param_order):
+            # Vérifier si l'indice est valide pour best_params_values
+            if i >= len(best_params_values):
+                continue
             val = best_params_values[i]
             p_name_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel', 'bin_block': 'bin_block_size', 'denoise_h': 'denoise_h', 'bin_c': 'bin_c'}
             mapped_name = p_name_map.get(name)
@@ -389,9 +479,47 @@ class OptimizerGUI:
                  current_params[mapped_name] = val
         final_params.update(current_params)
 
-        self.update_status_from_thread(f"✅ Scipy terminé ! Meilleur score (négatif) : {result.fun:.4f}")
+        if self.cancellation_requested.is_set():
+            self.update_status_from_thread(f"⏹️ Scipy annulé ! Sauvegarde des résultats...")
+        else:
+            self.update_status_from_thread(f"✅ Scipy terminé ! Meilleur score (négatif) : {result.fun:.4f}")
+
         self.master.after(0, self.update_optimal_display, final_params)
-        self.enable_start_button()
+        self.finalize_run()
+
+    def request_cancellation(self):
+        """Signale l'annulation de l'optimisation en cours."""
+        self.cancellation_requested.set()
+        self.update_status_from_thread("🛑 Annulation demandée...")
+        self.btn_cancel.config(state="disabled")
+
+    def save_results_to_csv(self):
+        """Sauvegarde les résultats collectés dans un fichier CSV."""
+        if not self.results_data:
+            self.update_log_from_thread("Aucune donnée à sauvegarder.")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"optim_results_{timestamp}.csv"
+        
+        # Les en-têtes sont basés sur les clés du premier résultat
+        first_result = self.results_data[0]
+        param_headers = list(first_result.get('params', {}).keys())
+        score_headers = list(first_result.get('scores', {}).keys())
+        headers = param_headers + score_headers
+
+        try:
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f, delimiter=';')
+                writer.writerow(headers)
+                for result in self.results_data:
+                    # Assure l'ordre des valeurs
+                    param_values = [result.get('params', {}).get(h) for h in param_headers]
+                    score_values = [result.get('scores', {}).get(h) for h in score_headers]
+                    writer.writerow(param_values + score_values)
+            self.update_log_from_thread(f"📈 Résultats sauvegardés dans : {filename}")
+        except Exception as e:
+            self.update_log_from_thread(f"Erreur lors de la sauvegarde CSV : {e}")
 
     def update_log_from_thread(self, msg):
         self.master.after(0, self.log_text.insert, tk.END, msg + "\n")
@@ -400,12 +528,27 @@ class OptimizerGUI:
     def update_status_from_thread(self, msg):
         self.master.after(0, self.status_label.config, {'text': msg})
         
-    def enable_start_button(self):
+    def finalize_run(self):
+        """Remet l'interface en état 'Prêt' et sauvegarde les résultats."""
         self.master.after(0, self.btn_start.config, {'state': 'normal'})
+        self.master.after(0, self.btn_cancel.config, {'state': 'disabled'})
+        self.master.after(0, self.save_results_to_csv)
 
     def on_trial_finish(self, trial_num, t_score, s_score, c_score, params):
         msg = f"[Essai {trial_num}] Tess: {t_score:.2f}% | Netteté: {s_score:.1f} | Contraste: {c_score:.1f}"
         self.update_log_from_thread(msg)
+
+        # Enregistrement des données pour le CSV
+        trial_data = {
+            'params': params.copy(),
+            'scores': {
+                'tesseract': round(t_score, 4),
+                'nettete': round(s_score, 2),
+                'contraste': round(c_score, 2)
+            }
+        }
+        self.results_data.append(trial_data)
+
         if t_score > self.best_score_so_far:
             self.best_score_so_far = t_score
             self.update_status_from_thread(f"🔥 RECORD TESSERACT : {t_score:.2f}% (Essai {trial_num})")

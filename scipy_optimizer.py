@@ -21,7 +21,7 @@ class ObjectiveWrapper:
     def get_stats(self):
         return self.evaluations, time.time() - self.start_time if self.start_time else 0
 
-def run_scipy_optimization(objective_func, bounds, algorithm, n_sobol_points, n_iterations, update_callback=None):
+def run_scipy_optimization(objective_func, bounds, algorithm, n_sobol_points, n_iterations, update_callback=None, cancellation_event=None):
     """
     Exécute l'optimisation avec Scipy à partir de points de départ générés par une séquence de Sobol.
 
@@ -31,6 +31,7 @@ def run_scipy_optimization(objective_func, bounds, algorithm, n_sobol_points, n_
     :param n_sobol_points: Le nombre de points de départ à générer.
     :param n_iterations: Le nombre maximum d'itérations pour chaque optimisation.
     :param update_callback: Callback pour mettre à jour l'UI avec la progression.
+    :param cancellation_event: threading.Event pour signaler l'annulation.
     :return: Le meilleur résultat trouvé.
     """
     lower_bounds = [b[0] for b in bounds]
@@ -45,25 +46,47 @@ def run_scipy_optimization(objective_func, bounds, algorithm, n_sobol_points, n_
     
     wrapped_objective = ObjectiveWrapper(objective_func)
 
+    # Pour l'annulation
+    class StopOptimization(Exception):
+        pass
+
+    def callback(xk):
+        if cancellation_event and cancellation_event.is_set():
+            raise StopOptimization()
+
     for i, start_point in enumerate(scaled_sobol_points):
+        if cancellation_event and cancellation_event.is_set():
+            if update_callback:
+                update_callback("Optimisation Scipy annulée par l'utilisateur.")
+            break
+
         if update_callback:
             update_callback(f"Optimisation depuis le point de départ {i+1}/{n_sobol_points}...")
 
-        result = minimize(
-            wrapped_objective,
-            x0=start_point,
-            method=algorithm,
-            bounds=bounds,
-            options={'maxiter': n_iterations}
-        )
+        try:
+            result = minimize(
+                wrapped_objective,
+                x0=start_point,
+                method=algorithm,
+                bounds=bounds,
+                options={'maxiter': n_iterations},
+                callback=callback if cancellation_event else None
+            )
 
-        if result.fun < best_result["fun"]:
-            best_result = result
+            if result.fun < best_result["fun"]:
+                best_result = result
+                if update_callback:
+                    update_callback(f"Nouveau meilleur résultat trouvé : {result.fun:.4f}")
+        except StopOptimization:
             if update_callback:
-                update_callback(f"Nouveau meilleur résultat trouvé : {result.fun:.4f}")
+                update_callback(f"Passe d'optimisation {i+1} annulée.")
+            break # Sortir de la boucle for
 
     evals, duration = wrapped_objective.get_stats()
     if update_callback:
-        update_callback(f"Optimisation Scipy terminée. Total: {evals} évaluations en {duration:.2f} secondes.")
+        if cancellation_event and cancellation_event.is_set():
+             update_callback(f"Scipy annulé. Total: {evals} évaluations en {duration:.2f} secondes.")
+        else:
+             update_callback(f"Optimisation Scipy terminée. Total: {evals} évaluations en {duration:.2f} secondes.")
         
     return best_result
