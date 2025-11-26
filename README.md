@@ -37,7 +37,7 @@ This project provides a Graphical User Interface (GUI) tool to optimize image pr
     *Note: `tkinter` is usually included with Python.*
 
 4.  **Install Tesseract OCR:**
-    Download and install Tesseract OCR from https://tesseract-ocr.github.io/tessdoc/Installation.html.
+    Download and install Tesseract OCR from [https://tesseract-ocr.github.io/tessdoc/Installation.html](https://tesseract-ocr.github.io/tessdoc/Installation.html).
 
 5.  **Configure Tesseract Path:**
     Update the `pytesseract.pytesseract.tesseract_cmd` variable in `gui_optimizer_v3_ultim.py` to point to your Tesseract executable (e.g., `r'C:\Program Files\Tesseract-OCR\tesseract.exe'` for Windows).
