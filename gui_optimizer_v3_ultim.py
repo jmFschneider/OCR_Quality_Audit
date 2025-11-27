@@ -19,17 +19,24 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# Activer les optimisations OpenCV
+cv2.setUseOptimized(True)
+
+# Tenter d'activer OpenCL pour l'accélération GPU si disponible
+if cv2.ocl.haveOpenCL():
+    cv2.ocl.setUseOpenCL(True)
+    print("OpenCL activé pour OpenCV (accélération GPU potentielle).")
+else:
+    print("OpenCL non disponible ou non activé pour OpenCV.")
 
 # --- CORE FUNCTIONS (UNCHANGED) ---
 
 def get_sharpness(image):
-    if len(image.shape) == 3: gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else: gray = image
+    gray = image # Image is already grayscale
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 def get_contrast(image):
-    if len(image.shape) == 3: gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else: gray = image
+    gray = image # Image is already grayscale
     return gray.std()
 
 def get_tesseract_score(image):
@@ -61,7 +68,7 @@ def normalisation_division(image_gray, kernel_size):
     return cv2.divide(image_gray, fond, scale=255)
 
 def pipeline_complet(image, params):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+    gray = image # Image is already grayscale
     no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
     norm = normalisation_division(no_lines, params['norm_kernel'])
     denoised = cv2.fastNlMeansDenoising(norm, None, h=params['denoise_h'], templateWindowSize=7, searchWindowSize=21) if params['denoise_h'] > 0 else norm
@@ -74,10 +81,10 @@ def pipeline_complet(image, params):
 
 import scipy_optimizer
 
-def process_single_file_wrapper(args):
+def process_image_data_wrapper(args):
     """
-    Wrapper function to process a single file. Takes a tuple of (file_path, params)
-    as input to be compatible with pool.starmap.
+    Wrapper function to process a single image's data. Takes a tuple of (image_data, params)
+    as input to be compatible with pool.map.
     """
     # FORCER LE MONO-THREADING : Crucial pour les performances en multiprocessing.
     # Empêche les bibliothèques sous-jacentes (OpenCV, Tesseract/OpenMP, MKL)
@@ -87,8 +94,7 @@ def process_single_file_wrapper(args):
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     cv2.setNumThreads(1)
 
-    file_path, params = args
-    img = cv2.imread(file_path)
+    img, params = args
     if img is None:
         return None
     processed_img = pipeline_complet(img, params)
@@ -173,13 +179,14 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
 class OptimizerGUI:
     def __init__(self, master):
         self.master = master
-        master.title("🔍 Optimiseur OCR V6 - Optuna & Scipy")
+        master.title("🔍 Optimiseur OCR V7 - Parallélisé")
         master.geometry("1000x800")
 
         self.best_score_so_far = 0.0
         self.trial_count = 0
         self.param_entries = {}
         self.optimal_labels = {}
+        self.loaded_images = [] # To store pre-loaded images
         self.default_params = {
             'line_h': (30, 70, 45), 'line_v': (40, 120, 50),
             'norm_kernel': (40, 100, 75), 'denoise_h': (2.0, 20.0, 9.0),
@@ -195,6 +202,20 @@ class OptimizerGUI:
         self.image_files = []
         self.create_widgets()
         self.refresh_image_list()
+
+    def pre_load_images(self):
+        """Loads all images from the input folder into memory, in grayscale."""
+        self.update_log_from_thread("Pré-chargement des images en mémoire (en niveaux de gris)...")
+        self.loaded_images = []
+        if not self.image_files:
+            messagebox.showwarning("Aucune image", f"Aucune image trouvée dans le dossier {INPUT_FOLDER}. Cliquez sur 🔄 pour rafraîchir.")
+            return
+            
+        for f in self.image_files:
+            img = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                self.loaded_images.append(img)
+        self.update_log_from_thread(f"{len(self.loaded_images)} images chargées en mémoire.")
 
     def create_widgets(self):
         style = ttk.Style()
@@ -336,27 +357,22 @@ class OptimizerGUI:
         return active_ranges, fixed_params, param_order
     
     def evaluate_pipeline(self, params):
-        fichiers = self.image_files
-        if not fichiers:
+        if not self.loaded_images:
             return 0, 0, 0
 
-        # Prepare arguments for the multiprocessing pool
-        pool_args = zip(fichiers, repeat(params))
+        pool_args = zip(self.loaded_images, repeat(params))
         
-        # --- DIAGNOSTIC --- Limiter la taille du pool au nombre de tâches si < cpu_count
-        pool_size = min(len(fichiers), os.cpu_count())
+        # Limiter la taille du pool au nombre de tâches si < cpu_count
+        pool_size = min(len(self.loaded_images), os.cpu_count())
         
         try:
-            # Create a pool of workers with a specific size
             with multiprocessing.Pool(processes=pool_size) as pool:
-                results = pool.map(process_single_file_wrapper, pool_args)
+                results = pool.map(process_image_data_wrapper, pool_args)
             
-            # Filter out None results from failed image reads
             valid_results = [r for r in results if r is not None]
             if not valid_results:
                 return 0, 0, 0
 
-            # Unzip results
             list_tess, list_sharp, list_cont = zip(*valid_results)
 
             avg_tess = sum(list_tess) / len(list_tess) if list_tess else 0
@@ -365,12 +381,9 @@ class OptimizerGUI:
             return avg_tess, avg_sharp, avg_cont
 
         except Exception as e:
-            # Fallback to sequential processing in case of multiprocessing error
             print(f"Erreur de multiprocessing, passage en mode séquentiel: {e}")
             list_tess, list_sharp, list_cont = [], [], []
-            for f in fichiers:
-                img = cv2.imread(f)
-                if img is None: continue
+            for img in self.loaded_images:
                 processed_img = pipeline_complet(img, params)
                 tess, sharp, cont = evaluer_toutes_metriques(processed_img)
                 list_tess.append(tess); list_sharp.append(sharp); list_cont.append(cont)
@@ -396,6 +409,9 @@ class OptimizerGUI:
         self.best_score_so_far = 0.0
         self.trial_count = 0
         for lbl in self.optimal_labels.values(): lbl.config(text="-")
+
+        # Pre-load images once before starting the thread
+        self.pre_load_images()
 
         library = self.lib_var.get()
         algo = self.algo_var.get()
