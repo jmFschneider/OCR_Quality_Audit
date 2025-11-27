@@ -12,12 +12,19 @@ import csv
 from datetime import datetime
 import multiprocessing
 from itertools import repeat
+import time
 
 # --- CONFIGURATION ---
 INPUT_FOLDER = 'test_scans'
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+# --- GLOBAL FLAG FOR TIMING ---
+# This flag ensures that the detailed timing breakdown is printed only once per run.
+# It's not perfectly thread-safe across processes but is sufficient for this diagnostic purpose.
+has_printed_timings = False
+
 
 # Activer les optimisations OpenCV
 cv2.setUseOptimized(True)
@@ -75,8 +82,31 @@ def pipeline_complet(image, params):
     return cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
 
 
+def pipeline_complet_timed(image, params):
+    timings = {}
+    gray = image # Image is already grayscale
 
+    # Step 1: Line Removal
+    t0 = time.time()
+    no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
+    timings['1_line_removal'] = (time.time() - t0) * 1000
 
+    # Step 2: Normalization
+    t0 = time.time()
+    norm = normalisation_division(no_lines, params['norm_kernel'])
+    timings['2_normalization'] = (time.time() - t0) * 1000
+
+    # Step 3: Denoising
+    t0 = time.time()
+    denoised = cv2.fastNlMeansDenoising(norm, None, h=params['denoise_h'], templateWindowSize=7, searchWindowSize=21) if params['denoise_h'] > 0 else norm
+    timings['3_denoising'] = (time.time() - t0) * 1000
+
+    # Step 4: Binarization
+    t0 = time.time()
+    processed_img = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
+    timings['4_binarization'] = (time.time() - t0) * 1000
+    
+    return processed_img, timings
 
 
 import scipy_optimizer
@@ -86,9 +116,9 @@ def process_image_data_wrapper(args):
     Wrapper function to process a single image's data. Takes a tuple of (image_data, params)
     as input to be compatible with pool.map.
     """
+    global has_printed_timings
+
     # FORCER LE MONO-THREADING : Crucial pour les performances en multiprocessing.
-    # Empêche les bibliothèques sous-jacentes (OpenCV, Tesseract/OpenMP, MKL)
-    # de créer leurs propres threads, ce qui provoquerait une sur-sollicitation.
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -97,8 +127,37 @@ def process_image_data_wrapper(args):
     img, params = args
     if img is None:
         return None
-    processed_img = pipeline_complet(img, params)
-    return evaluer_toutes_metriques(processed_img)
+
+    # Execute the timed pipeline
+    processed_img, timings = pipeline_complet_timed(img, params)
+
+    # --- TIMED METRICS (continued) ---
+    
+    # Step 5: Tesseract OCR
+    t0 = time.time()
+    score_tess = get_tesseract_score(processed_img)
+    timings['5_ocr_tesseract'] = (time.time() - t0) * 1000
+
+    # Step 6: Other metrics
+    t0 = time.time()
+    score_sharp = get_sharpness(processed_img)
+    score_cont = get_contrast(processed_img)
+    timings['6_sharp_contrast'] = (time.time() - t0) * 1000
+
+    # --- PRINT TIMINGS (ONCE) ---
+    if not has_printed_timings:
+        # In a multiprocessing environment, this might still print a few times,
+        # but it's good enough for diagnostics.
+        has_printed_timings = True
+        print("\n--- Analyse détaillée des temps d'exécution (en ms, pour une image) ---")
+        total_time = sum(timings.values())
+        for name, t in sorted(timings.items()):
+            percentage = (t / total_time) * 100 if total_time > 0 else 0
+            print(f"  - Étape {name}: {t:.2f} ms ({percentage:.1f}%)")
+        print(f"  - TEMPS TOTAL par image: {total_time:.2f} ms")
+        print("----------------------------------------------------------------------\n")
+        
+    return score_tess, score_sharp, score_cont
 
 # --- OPTUNA & LOGGING ---
 
@@ -394,6 +453,8 @@ class OptimizerGUI:
             return avg_tess, avg_sharp, avg_cont
 
     def start_optimization(self):
+        global has_printed_timings
+        has_printed_timings = False
         self.cancellation_requested.clear()
         self.results_data.clear()
         self.btn_start.config(state="disabled")
