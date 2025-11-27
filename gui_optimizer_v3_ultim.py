@@ -209,6 +209,110 @@ def process_image_data_wrapper(args):
         
     return score_tess, score_sharp, score_cont
 
+# --- SCREENING SOBOL ---
+
+def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
+    """
+    Screening pur avec séquence de Sobol (Design of Experiments).
+    Génère 2^n_sobol_exp points et évalue tous sans optimisation.
+    Sauvegarde tous les résultats dans un CSV pour analyse ultérieure.
+    """
+    from scipy.stats import qmc
+
+    n_points = 2 ** n_sobol_exp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"screening_sobol_{n_sobol_exp}_{timestamp}.csv"
+
+    gui_app.update_log_from_thread(f"🔍 SCREENING SOBOL: Génération de {n_points} points (2^{n_sobol_exp})")
+
+    # Préparer les bornes pour Sobol
+    param_names = list(param_ranges.keys())
+    lower_bounds = [param_ranges[p][0] for p in param_names]
+    upper_bounds = [param_ranges[p][1] for p in param_names]
+
+    # Générer séquence Sobol
+    sampler = qmc.Sobol(d=len(param_names), scramble=True)
+    sobol_samples = sampler.random(n=n_points)
+    scaled_samples = qmc.scale(sobol_samples, lower_bounds, upper_bounds)
+
+    # Préparer le CSV
+    header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel',
+                  'denoise_h': 'denoise_h', 'noise_threshold': 'noise_threshold',
+                  'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
+
+    csv_headers = ['point_id', 'score_tesseract', 'score_nettete', 'score_contraste']
+    for p in param_names:
+        csv_headers.append(header_map.get(p, p))
+
+    with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter=';')
+        writer.writerow(csv_headers)
+
+    gui_app.update_log_from_thread(f"📄 Fichier de résultats: {csv_filename}")
+
+    # Évaluer chaque point
+    best_score = 0
+    best_params = None
+
+    for idx, sample in enumerate(scaled_samples):
+        if gui_app.cancellation_requested.is_set():
+            gui_app.update_log_from_thread("⚠️ Screening annulé par l'utilisateur")
+            break
+
+        # Construire params dict
+        params = fixed_params.copy()
+        for i, param_name in enumerate(param_names):
+            val = sample[i]
+            if param_name == 'norm_kernel':
+                params['norm_kernel'] = int(val) * 2 + 1
+            elif param_name == 'bin_block':
+                params['bin_block_size'] = int(val) * 2 + 1
+            elif param_name == 'line_h':
+                params['line_h_size'] = int(val)
+            elif param_name == 'line_v':
+                params['line_v_size'] = int(val)
+            elif param_name in ['denoise_h', 'noise_threshold', 'bin_c']:
+                params[param_name] = val
+            else:
+                params[param_name] = val
+
+        # Évaluer
+        avg_tess, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
+
+        # Sauvegarder
+        with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter=';')
+            row_data = [idx + 1, avg_tess, avg_sharp, avg_cont]
+            for p in param_names:
+                if p == 'norm_kernel':
+                    row_data.append(params.get('norm_kernel'))
+                elif p == 'bin_block':
+                    row_data.append(params.get('bin_block_size'))
+                elif p == 'line_h':
+                    row_data.append(params.get('line_h_size'))
+                elif p == 'line_v':
+                    row_data.append(params.get('line_v_size'))
+                else:
+                    row_data.append(params.get(p))
+            writer.writerow(row_data)
+
+        # Suivi du meilleur
+        if avg_tess > best_score:
+            best_score = avg_tess
+            best_params = params.copy()
+            gui_app.update_log_from_thread(f"🔥 Point {idx+1}/{n_points}: Nouveau meilleur score = {avg_tess:.2f}%")
+        else:
+            if (idx + 1) % 10 == 0:  # Log tous les 10 points
+                gui_app.update_log_from_thread(f"   Point {idx+1}/{n_points}: Score = {avg_tess:.2f}%")
+
+        # Mise à jour UI
+        gui_app.on_trial_finish(idx, avg_tess, avg_sharp, avg_cont, params)
+
+    gui_app.update_status_from_thread(f"✅ Screening terminé! Meilleur score: {best_score:.2f}%")
+    gui_app.update_log_from_thread(f"📊 {n_points} points évalués et sauvegardés dans {csv_filename}")
+
+    return best_params
+
 # --- OPTUNA & LOGGING ---
 
 def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_choice):
@@ -359,11 +463,11 @@ class OptimizerGUI:
         # --- Utilisation de GRID pour une disposition stable ---
         ctrl_frame.columnconfigure(2, weight=1)
 
-        # Colonne 0: Bibliothèque
-        ttk.Label(ctrl_frame, text="Bibliothèque :").grid(row=0, column=0, sticky="w", padx=5)
-        self.lib_var = tk.StringVar(value="Optuna")
-        self.lib_combo = ttk.Combobox(ctrl_frame, textvariable=self.lib_var, state="readonly", width=10, values=["Optuna", "Scipy"])
-        self.lib_combo.grid(row=0, column=0, sticky="w", padx=(80,5))
+        # Colonne 0: Bibliothèque/Mode
+        ttk.Label(ctrl_frame, text="Mode :").grid(row=0, column=0, sticky="w", padx=5)
+        self.lib_var = tk.StringVar(value="Screening")
+        self.lib_combo = ttk.Combobox(ctrl_frame, textvariable=self.lib_var, state="readonly", width=12, values=["Screening", "Optuna", "Scipy"])
+        self.lib_combo.grid(row=0, column=0, sticky="w", padx=(50,5))
         self.lib_combo.bind("<<ComboboxSelected>>", self.on_library_select)
         
         # Colonne 1: Algorithme
@@ -419,12 +523,17 @@ class OptimizerGUI:
         self.scipy_frame.grid_remove()
         self.optuna_frame.grid_remove()
 
-        lib = self.lib_var.get()
-        if lib == "Optuna":
+        mode = self.lib_var.get()
+        if mode == "Screening":
+            # Mode Screening : on utilise le champ Sobol de Scipy
+            self.algo_combo.config(values=["Sobol DoE"])
+            self.algo_var.set("Sobol DoE")
+            self.scipy_frame.grid(row=0, column=2, sticky="w")
+        elif mode == "Optuna":
             self.algo_combo.config(values=self.optuna_algos)
             self.algo_var.set(self.optuna_algos[0])
             self.optuna_frame.grid(row=0, column=2, sticky="w")
-        else:
+        else:  # Scipy
             self.algo_combo.config(values=self.scipy_algos)
             self.algo_var.set(self.scipy_algos[0])
             self.scipy_frame.grid(row=0, column=2, sticky="w")
@@ -528,10 +637,21 @@ class OptimizerGUI:
         # Pre-load images once before starting the thread
         self.pre_load_images()
 
-        library = self.lib_var.get()
+        mode = self.lib_var.get()
         algo = self.algo_var.get()
 
-        if library == "Optuna":
+        if mode == "Screening":
+            # Mode Screening Sobol pur (DoE)
+            try:
+                exponent = int(self.sobol_exponent_var.get())
+                self.update_status_from_thread(f"🔬 Lancement Screening Sobol (2^{exponent} = {2**exponent} points)...")
+                thread = threading.Thread(target=run_sobol_screening, args=(self, exponent, active_ranges, fixed_params))
+                thread.start()
+            except ValueError:
+                messagebox.showerror("Erreur de Saisie", "L'exposant Sobol doit être un entier.")
+                self.finalize_run()
+
+        elif mode == "Optuna":
             try:
                 n_trials = int(self.trials_entry.get())
                 thread = threading.Thread(target=run_optuna_optimization, args=(self, n_trials, active_ranges, fixed_params, algo))
