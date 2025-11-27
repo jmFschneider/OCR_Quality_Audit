@@ -128,20 +128,18 @@ def remove_lines_param(gray_image, h_size, v_size, dilate_iter):
     mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=dilate_iter)
 
     # Copie et masquage
-    result = gray_image.copy()
-    if isinstance(result, cv2.UMat) and isinstance(mask, cv2.UMat):
-        # Opération GPU
-        result_np = result.get()
-        mask_np = mask.get()
+    # UMat n'a pas de méthode .copy(), utiliser clone() ou getMat()
+    if isinstance(gray_image, cv2.UMat):
+        result_np = gray_image.get().copy()
+        mask_np = mask.get() if isinstance(mask, cv2.UMat) else mask
         result_np[mask_np > 0] = 255
+        # Reconvertir en UMat si GPU activé
         result = cv2.UMat(result_np) if USE_GPU else result_np
     else:
-        # Opération CPU fallback
-        if isinstance(result, cv2.UMat):
-            result = result.get()
-        if isinstance(mask, cv2.UMat):
-            mask = mask.get()
-        result[mask > 0] = 255
+        # Opération CPU standard
+        result = gray_image.copy()
+        mask_np = mask.get() if isinstance(mask, cv2.UMat) else mask
+        result[mask_np > 0] = 255
 
     return result
 
@@ -545,11 +543,9 @@ class OptimizerGUI:
 
     def pre_load_images(self):
         """Loads all images from the input folder into memory, in grayscale.
-        Utilise UMat (GPU) si disponible pour des performances accrues."""
-        if USE_GPU:
-            self.update_log_from_thread("Pré-chargement des images en mémoire GPU (UMat) en niveaux de gris...")
-        else:
-            self.update_log_from_thread("Pré-chargement des images en mémoire (en niveaux de gris)...")
+        Les images sont chargées en numpy pour compatibilité multiprocessing.
+        La conversion UMat (GPU) se fait dans chaque worker si nécessaire."""
+        self.update_log_from_thread("Pré-chargement des images en mémoire (en niveaux de gris)...")
 
         self.loaded_images = []
         if not self.image_files:
@@ -559,15 +555,11 @@ class OptimizerGUI:
         for f in self.image_files:
             img = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
             if img is not None:
-                # Convertir en UMat pour GPU si disponible
-                if USE_GPU:
-                    img = cv2.UMat(img)
+                # Garder en numpy pour compatibilité pickle/multiprocessing
+                # La conversion UMat se fera dans chaque worker
                 self.loaded_images.append(img)
 
-        if USE_GPU:
-            self.update_log_from_thread(f"{len(self.loaded_images)} images chargées en mémoire GPU (UMat).")
-        else:
-            self.update_log_from_thread(f"{len(self.loaded_images)} images chargées en mémoire.")
+        self.update_log_from_thread(f"{len(self.loaded_images)} images chargées en mémoire.")
 
     def create_widgets(self):
         style = ttk.Style()

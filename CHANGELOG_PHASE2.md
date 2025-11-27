@@ -177,7 +177,7 @@ LANCER
 
 ---
 
-## ⚠️ Limitations Connues
+## ⚠️ Limitations Connues et Solutions
 
 1. **fastNlMeansDenoising** : Ne supporte pas UMat dans toutes les versions OpenCV
    - **Solution** : Conversion temporaire en numpy, puis reconversion en UMat
@@ -185,7 +185,14 @@ LANCER
 2. **Tesseract** : Nécessite numpy array (pas UMat)
    - **Solution** : Conversion UMat→numpy juste avant l'appel Tesseract
 
-3. **Overhead de conversion** : Sur de très petites images (<500×500), le gain peut être négligeable
+3. **Multiprocessing** : UMat ne peut pas être sérialisé (pickle) pour multiprocessing
+   - **Solution** : Images chargées en numpy, conversion UMat dans chaque worker
+   - **Impact** : Léger overhead de conversion, mais gain GPU reste positif
+
+4. **UMat.copy()** : Méthode inexistante sur cv2.UMat
+   - **Solution** : Utiliser `umat.get().copy()` puis reconvertir en UMat
+
+5. **Overhead de conversion** : Sur de très petites images (<500×500), le gain peut être négligeable
 
 ---
 
