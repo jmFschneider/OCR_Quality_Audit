@@ -84,28 +84,27 @@ def estimate_noise_level(image):
     noise_estimate = laplacian.var()
     return noise_estimate
 
-def adaptive_denoising(image, base_h_param, noise_threshold_low=50, noise_threshold_high=200):
+def adaptive_denoising(image, base_h_param, noise_threshold=100):
     """
     Applique un denoising adaptatif basé sur le niveau de bruit détecté.
-    - Si bruit faible : skip denoising ou paramètres légers
-    - Si bruit moyen : paramètres réduits (searchWindowSize=15)
-    - Si bruit élevé : paramètres complets (searchWindowSize=21)
+    Stratégie simplifiée (2 niveaux) :
+    - Si bruit < threshold : searchWindowSize=15 (rapide, gain 30-40%)
+    - Si bruit >= threshold : searchWindowSize=21 (qualité maximale)
+
+    Le paramètre noise_threshold est optimisable pour s'adapter à vos images.
     """
     if base_h_param <= 0:
         return image
 
     noise_level = estimate_noise_level(image)
 
-    # Stratégie adaptative
-    if noise_level < noise_threshold_low:
-        # Image propre : skip denoising
-        return image
-    elif noise_level < noise_threshold_high:
-        # Bruit moyen : paramètres optimisés (gain 30-40%)
+    # Stratégie adaptative à 2 niveaux
+    if noise_level < noise_threshold:
+        # Bruit faible/moyen : paramètres optimisés (gain de vitesse)
         return cv2.fastNlMeansDenoising(image, None, h=base_h_param,
                                        templateWindowSize=7, searchWindowSize=15)
     else:
-        # Bruit élevé : paramètres complets
+        # Bruit élevé : paramètres complets (qualité maximale)
         return cv2.fastNlMeansDenoising(image, None, h=base_h_param,
                                        templateWindowSize=7, searchWindowSize=21)
 
@@ -113,7 +112,7 @@ def pipeline_complet(image, params):
     gray = image # Image is already grayscale
     no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
     norm = normalisation_division(no_lines, params['norm_kernel'])
-    denoised = adaptive_denoising(norm, params['denoise_h'])
+    denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
     return cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
 
 
@@ -134,9 +133,10 @@ def pipeline_complet_timed(image, params):
     # Step 3: Denoising (Adaptive)
     t0 = time.time()
     noise_level = estimate_noise_level(norm)
-    denoised = adaptive_denoising(norm, params['denoise_h'])
+    denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
     timings['3_denoising'] = (time.time() - t0) * 1000
     timings['noise_level'] = noise_level  # Pour diagnostic
+    timings['noise_threshold'] = params.get('noise_threshold', 100)  # Pour voir le seuil utilisé
 
     # Step 4: Binarization
     t0 = time.time()
@@ -188,13 +188,14 @@ def process_image_data_wrapper(args):
         has_printed_timings = True
         print("\n--- Analyse détaillée des temps d'exécution (en ms, pour une image) ---")
 
-        # Séparer le noise_level des timings pour l'affichage
+        # Séparer le noise_level et noise_threshold des timings pour l'affichage
         noise_level = timings.pop('noise_level', None)
-        if noise_level is not None:
+        noise_threshold = timings.pop('noise_threshold', None)
+
+        if noise_level is not None and noise_threshold is not None:
             print(f"  - Niveau de bruit détecté: {noise_level:.2f}")
-            if noise_level < 50:
-                print("    → Stratégie: SKIP denoising (image propre)")
-            elif noise_level < 200:
+            print(f"  - Seuil de bruit configuré: {noise_threshold:.2f}")
+            if noise_level < noise_threshold:
                 print("    → Stratégie: Denoising OPTIMISÉ (searchWindowSize=15)")
             else:
                 print("    → Stratégie: Denoising COMPLET (searchWindowSize=21)")
@@ -217,7 +218,7 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
     
     all_param_names = list(param_ranges.keys())
     
-    header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel', 'denoise_h': 'denoise_h', 'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
+    header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel', 'denoise_h': 'denoise_h', 'noise_threshold': 'noise_threshold', 'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
     dynamic_headers = [header_map[p] for p in all_param_names if p in header_map]
     csv_headers = ['trial_id', 'score_tesseract', 'score_nettete', 'score_contraste'] + dynamic_headers
 
@@ -238,6 +239,7 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
         if 'line_v' in param_ranges: current_params['line_v_size'] = trial.suggest_int('line_v_size', int(param_ranges['line_v'][0]), int(param_ranges['line_v'][1]))
         if 'norm_kernel' in param_ranges: current_params['norm_kernel'] = trial.suggest_int('norm_kernel_base', int(param_ranges['norm_kernel'][0]), int(param_ranges['norm_kernel'][1])) * 2 + 1
         if 'denoise_h' in param_ranges: current_params['denoise_h'] = trial.suggest_float('denoise_h', param_ranges['denoise_h'][0], param_ranges['denoise_h'][1])
+        if 'noise_threshold' in param_ranges: current_params['noise_threshold'] = trial.suggest_float('noise_threshold', param_ranges['noise_threshold'][0], param_ranges['noise_threshold'][1])
         if 'bin_block' in param_ranges:
             base_val = trial.suggest_int('bin_block_base', int(param_ranges['bin_block'][0]), int(param_ranges['bin_block'][1]))
             current_params['bin_block_size'] = base_val * 2 + 1
@@ -298,6 +300,7 @@ class OptimizerGUI:
         self.default_params = {
             'line_h': (30, 70, 45), 'line_v': (40, 120, 50),
             'norm_kernel': (40, 100, 75), 'denoise_h': (2.0, 20.0, 9.0),
+            'noise_threshold': (20.0, 500.0, 100.0),  # Nouveau: seuil adaptatif denoising
             'bin_block': (30, 100, 60), 'bin_c': (10, 25.0, 15.0)
         }
         self.param_enabled_vars = {name: tk.BooleanVar(value=True) for name in self.default_params}
