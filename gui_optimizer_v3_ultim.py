@@ -12,6 +12,7 @@ import csv
 from datetime import datetime
 import multiprocessing
 from itertools import repeat
+import time
 
 # --- CONFIGURATION ---
 INPUT_FOLDER = 'test_scans'
@@ -19,17 +20,30 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# --- GLOBAL FLAG FOR TIMING ---
+# This flag ensures that the detailed timing breakdown is printed only once per run.
+# It's not perfectly thread-safe across processes but is sufficient for this diagnostic purpose.
+has_printed_timings = False
+
+
+# Activer les optimisations OpenCV
+cv2.setUseOptimized(True)
+
+# Tenter d'activer OpenCL pour l'accélération GPU si disponible
+if cv2.ocl.haveOpenCL():
+    cv2.ocl.setUseOpenCL(True)
+    print("OpenCL activé pour OpenCV (accélération GPU potentielle).")
+else:
+    print("OpenCL non disponible ou non activé pour OpenCV.")
 
 # --- CORE FUNCTIONS (UNCHANGED) ---
 
 def get_sharpness(image):
-    if len(image.shape) == 3: gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else: gray = image
+    gray = image # Image is already grayscale
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 def get_contrast(image):
-    if len(image.shape) == 3: gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else: gray = image
+    gray = image # Image is already grayscale
     return gray.std()
 
 def get_tesseract_score(image):
@@ -60,39 +74,244 @@ def normalisation_division(image_gray, kernel_size):
     fond = cv2.GaussianBlur(image_gray, (kernel_size, kernel_size), 0)
     return cv2.divide(image_gray, fond, scale=255)
 
+def estimate_noise_level(image):
+    """
+    Estime le niveau de bruit dans une image en utilisant la variance locale.
+    Retourne un score de bruit (plus élevé = plus de bruit).
+    """
+    # Calcul de la variance locale avec un filtre Laplacien
+    laplacian = cv2.Laplacian(image, cv2.CV_64F)
+    noise_estimate = laplacian.var()
+    return noise_estimate
+
+def adaptive_denoising(image, base_h_param, noise_threshold=100):
+    """
+    Applique un denoising adaptatif basé sur le niveau de bruit détecté.
+    Stratégie simplifiée (2 niveaux) :
+    - Si bruit < threshold : searchWindowSize=15 (rapide, gain 30-40%)
+    - Si bruit >= threshold : searchWindowSize=21 (qualité maximale)
+
+    Le paramètre noise_threshold est optimisable pour s'adapter à vos images.
+    """
+    if base_h_param <= 0:
+        return image
+
+    noise_level = estimate_noise_level(image)
+
+    # Stratégie adaptative à 2 niveaux
+    if noise_level < noise_threshold:
+        # Bruit faible/moyen : paramètres optimisés (gain de vitesse)
+        return cv2.fastNlMeansDenoising(image, None, h=base_h_param,
+                                       templateWindowSize=7, searchWindowSize=15)
+    else:
+        # Bruit élevé : paramètres complets (qualité maximale)
+        return cv2.fastNlMeansDenoising(image, None, h=base_h_param,
+                                       templateWindowSize=7, searchWindowSize=21)
+
 def pipeline_complet(image, params):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+    gray = image # Image is already grayscale
     no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
     norm = normalisation_division(no_lines, params['norm_kernel'])
-    denoised = cv2.fastNlMeansDenoising(norm, None, h=params['denoise_h'], templateWindowSize=7, searchWindowSize=21) if params['denoise_h'] > 0 else norm
+    denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
     return cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
 
 
+def pipeline_complet_timed(image, params):
+    timings = {}
+    gray = image # Image is already grayscale
 
+    # Step 1: Line Removal
+    t0 = time.time()
+    no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
+    timings['1_line_removal'] = (time.time() - t0) * 1000
 
+    # Step 2: Normalization
+    t0 = time.time()
+    norm = normalisation_division(no_lines, params['norm_kernel'])
+    timings['2_normalization'] = (time.time() - t0) * 1000
+
+    # Step 3: Denoising (Adaptive)
+    t0 = time.time()
+    noise_level = estimate_noise_level(norm)
+    denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
+    timings['3_denoising'] = (time.time() - t0) * 1000
+    timings['noise_level'] = noise_level  # Pour diagnostic
+    timings['noise_threshold'] = params.get('noise_threshold', 100)  # Pour voir le seuil utilisé
+
+    # Step 4: Binarization
+    t0 = time.time()
+    processed_img = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
+    timings['4_binarization'] = (time.time() - t0) * 1000
+    
+    return processed_img, timings
 
 
 import scipy_optimizer
 
-def process_single_file_wrapper(args):
+def process_image_data_wrapper(args):
     """
-    Wrapper function to process a single file. Takes a tuple of (file_path, params)
-    as input to be compatible with pool.starmap.
+    Wrapper function to process a single image's data. Takes a tuple of (image_data, params)
+    as input to be compatible with pool.map.
     """
+    global has_printed_timings
+
     # FORCER LE MONO-THREADING : Crucial pour les performances en multiprocessing.
-    # Empêche les bibliothèques sous-jacentes (OpenCV, Tesseract/OpenMP, MKL)
-    # de créer leurs propres threads, ce qui provoquerait une sur-sollicitation.
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     cv2.setNumThreads(1)
 
-    file_path, params = args
-    img = cv2.imread(file_path)
+    img, params = args
     if img is None:
         return None
-    processed_img = pipeline_complet(img, params)
-    return evaluer_toutes_metriques(processed_img)
+
+    # Execute the timed pipeline
+    processed_img, timings = pipeline_complet_timed(img, params)
+
+    # --- TIMED METRICS (continued) ---
+    
+    # Step 5: Tesseract OCR
+    t0 = time.time()
+    score_tess = get_tesseract_score(processed_img)
+    timings['5_ocr_tesseract'] = (time.time() - t0) * 1000
+
+    # Step 6: Other metrics
+    t0 = time.time()
+    score_sharp = get_sharpness(processed_img)
+    score_cont = get_contrast(processed_img)
+    timings['6_sharp_contrast'] = (time.time() - t0) * 1000
+
+    # --- PRINT TIMINGS (ONCE) ---
+    if not has_printed_timings:
+        # In a multiprocessing environment, this might still print a few times,
+        # but it's good enough for diagnostics.
+        has_printed_timings = True
+        print("\n--- Analyse détaillée des temps d'exécution (en ms, pour une image) ---")
+
+        # Séparer le noise_level et noise_threshold des timings pour l'affichage
+        noise_level = timings.pop('noise_level', None)
+        noise_threshold = timings.pop('noise_threshold', None)
+
+        if noise_level is not None and noise_threshold is not None:
+            print(f"  - Niveau de bruit détecté: {noise_level:.2f}")
+            print(f"  - Seuil de bruit configuré: {noise_threshold:.2f}")
+            if noise_level < noise_threshold:
+                print("    → Stratégie: Denoising OPTIMISÉ (searchWindowSize=15)")
+            else:
+                print("    → Stratégie: Denoising COMPLET (searchWindowSize=21)")
+
+        total_time = sum(timings.values())
+        for name, t in sorted(timings.items()):
+            percentage = (t / total_time) * 100 if total_time > 0 else 0
+            print(f"  - Étape {name}: {t:.2f} ms ({percentage:.1f}%)")
+        print(f"  - TEMPS TOTAL par image: {total_time:.2f} ms")
+        print("----------------------------------------------------------------------\n")
+        
+    return score_tess, score_sharp, score_cont
+
+# --- SCREENING SOBOL ---
+
+def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
+    """
+    Screening pur avec séquence de Sobol (Design of Experiments).
+    Génère 2^n_sobol_exp points et évalue tous sans optimisation.
+    Sauvegarde tous les résultats dans un CSV pour analyse ultérieure.
+    """
+    from scipy.stats import qmc
+
+    n_points = 2 ** n_sobol_exp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"screening_sobol_{n_sobol_exp}_{timestamp}.csv"
+
+    gui_app.update_log_from_thread(f"🔍 SCREENING SOBOL: Génération de {n_points} points (2^{n_sobol_exp})")
+
+    # Préparer les bornes pour Sobol
+    param_names = list(param_ranges.keys())
+    lower_bounds = [param_ranges[p][0] for p in param_names]
+    upper_bounds = [param_ranges[p][1] for p in param_names]
+
+    # Générer séquence Sobol
+    sampler = qmc.Sobol(d=len(param_names), scramble=True)
+    sobol_samples = sampler.random(n=n_points)
+    scaled_samples = qmc.scale(sobol_samples, lower_bounds, upper_bounds)
+
+    # Préparer le CSV
+    header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel',
+                  'denoise_h': 'denoise_h', 'noise_threshold': 'noise_threshold',
+                  'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
+
+    csv_headers = ['point_id', 'score_tesseract', 'score_nettete', 'score_contraste']
+    for p in param_names:
+        csv_headers.append(header_map.get(p, p))
+
+    with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter=';')
+        writer.writerow(csv_headers)
+
+    gui_app.update_log_from_thread(f"📄 Fichier de résultats: {csv_filename}")
+
+    # Évaluer chaque point
+    best_score = 0
+    best_params = None
+
+    for idx, sample in enumerate(scaled_samples):
+        if gui_app.cancellation_requested.is_set():
+            gui_app.update_log_from_thread("⚠️ Screening annulé par l'utilisateur")
+            break
+
+        # Construire params dict
+        params = fixed_params.copy()
+        for i, param_name in enumerate(param_names):
+            val = sample[i]
+            if param_name == 'norm_kernel':
+                params['norm_kernel'] = int(val) * 2 + 1
+            elif param_name == 'bin_block':
+                params['bin_block_size'] = int(val) * 2 + 1
+            elif param_name == 'line_h':
+                params['line_h_size'] = int(val)
+            elif param_name == 'line_v':
+                params['line_v_size'] = int(val)
+            elif param_name in ['denoise_h', 'noise_threshold', 'bin_c']:
+                params[param_name] = val
+            else:
+                params[param_name] = val
+
+        # Évaluer
+        avg_tess, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
+
+        # Sauvegarder
+        with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter=';')
+            row_data = [idx + 1, avg_tess, avg_sharp, avg_cont]
+            for p in param_names:
+                if p == 'norm_kernel':
+                    row_data.append(params.get('norm_kernel'))
+                elif p == 'bin_block':
+                    row_data.append(params.get('bin_block_size'))
+                elif p == 'line_h':
+                    row_data.append(params.get('line_h_size'))
+                elif p == 'line_v':
+                    row_data.append(params.get('line_v_size'))
+                else:
+                    row_data.append(params.get(p))
+            writer.writerow(row_data)
+
+        # Suivi du meilleur
+        if avg_tess > best_score:
+            best_score = avg_tess
+            best_params = params.copy()
+            gui_app.update_log_from_thread(f"🔥 Point {idx+1}/{n_points}: Nouveau meilleur score = {avg_tess:.2f}%")
+        else:
+            if (idx + 1) % 10 == 0:  # Log tous les 10 points
+                gui_app.update_log_from_thread(f"   Point {idx+1}/{n_points}: Score = {avg_tess:.2f}%")
+
+        # Mise à jour UI
+        gui_app.on_trial_finish(idx, avg_tess, avg_sharp, avg_cont, params)
+
+    gui_app.update_status_from_thread(f"✅ Screening terminé! Meilleur score: {best_score:.2f}%")
+    gui_app.update_log_from_thread(f"📊 {n_points} points évalués et sauvegardés dans {csv_filename}")
+
+    return best_params
 
 # --- OPTUNA & LOGGING ---
 
@@ -103,7 +322,7 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
     
     all_param_names = list(param_ranges.keys())
     
-    header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel', 'denoise_h': 'denoise_h', 'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
+    header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel', 'denoise_h': 'denoise_h', 'noise_threshold': 'noise_threshold', 'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
     dynamic_headers = [header_map[p] for p in all_param_names if p in header_map]
     csv_headers = ['trial_id', 'score_tesseract', 'score_nettete', 'score_contraste'] + dynamic_headers
 
@@ -124,6 +343,7 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
         if 'line_v' in param_ranges: current_params['line_v_size'] = trial.suggest_int('line_v_size', int(param_ranges['line_v'][0]), int(param_ranges['line_v'][1]))
         if 'norm_kernel' in param_ranges: current_params['norm_kernel'] = trial.suggest_int('norm_kernel_base', int(param_ranges['norm_kernel'][0]), int(param_ranges['norm_kernel'][1])) * 2 + 1
         if 'denoise_h' in param_ranges: current_params['denoise_h'] = trial.suggest_float('denoise_h', param_ranges['denoise_h'][0], param_ranges['denoise_h'][1])
+        if 'noise_threshold' in param_ranges: current_params['noise_threshold'] = trial.suggest_float('noise_threshold', param_ranges['noise_threshold'][0], param_ranges['noise_threshold'][1])
         if 'bin_block' in param_ranges:
             base_val = trial.suggest_int('bin_block_base', int(param_ranges['bin_block'][0]), int(param_ranges['bin_block'][1]))
             current_params['bin_block_size'] = base_val * 2 + 1
@@ -173,16 +393,18 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
 class OptimizerGUI:
     def __init__(self, master):
         self.master = master
-        master.title("🔍 Optimiseur OCR V6 - Optuna & Scipy")
+        master.title("🔍 Optimiseur OCR V7 - Parallélisé")
         master.geometry("1000x800")
 
         self.best_score_so_far = 0.0
         self.trial_count = 0
         self.param_entries = {}
         self.optimal_labels = {}
+        self.loaded_images = [] # To store pre-loaded images
         self.default_params = {
             'line_h': (30, 70, 45), 'line_v': (40, 120, 50),
             'norm_kernel': (40, 100, 75), 'denoise_h': (2.0, 20.0, 9.0),
+            'noise_threshold': (20.0, 500.0, 100.0),  # Nouveau: seuil adaptatif denoising
             'bin_block': (30, 100, 60), 'bin_c': (10, 25.0, 15.0)
         }
         self.param_enabled_vars = {name: tk.BooleanVar(value=True) for name in self.default_params}
@@ -195,6 +417,20 @@ class OptimizerGUI:
         self.image_files = []
         self.create_widgets()
         self.refresh_image_list()
+
+    def pre_load_images(self):
+        """Loads all images from the input folder into memory, in grayscale."""
+        self.update_log_from_thread("Pré-chargement des images en mémoire (en niveaux de gris)...")
+        self.loaded_images = []
+        if not self.image_files:
+            messagebox.showwarning("Aucune image", f"Aucune image trouvée dans le dossier {INPUT_FOLDER}. Cliquez sur 🔄 pour rafraîchir.")
+            return
+            
+        for f in self.image_files:
+            img = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                self.loaded_images.append(img)
+        self.update_log_from_thread(f"{len(self.loaded_images)} images chargées en mémoire.")
 
     def create_widgets(self):
         style = ttk.Style()
@@ -227,11 +463,11 @@ class OptimizerGUI:
         # --- Utilisation de GRID pour une disposition stable ---
         ctrl_frame.columnconfigure(2, weight=1)
 
-        # Colonne 0: Bibliothèque
-        ttk.Label(ctrl_frame, text="Bibliothèque :").grid(row=0, column=0, sticky="w", padx=5)
-        self.lib_var = tk.StringVar(value="Optuna")
-        self.lib_combo = ttk.Combobox(ctrl_frame, textvariable=self.lib_var, state="readonly", width=10, values=["Optuna", "Scipy"])
-        self.lib_combo.grid(row=0, column=0, sticky="w", padx=(80,5))
+        # Colonne 0: Bibliothèque/Mode
+        ttk.Label(ctrl_frame, text="Mode :").grid(row=0, column=0, sticky="w", padx=5)
+        self.lib_var = tk.StringVar(value="Screening")
+        self.lib_combo = ttk.Combobox(ctrl_frame, textvariable=self.lib_var, state="readonly", width=12, values=["Screening", "Optuna", "Scipy"])
+        self.lib_combo.grid(row=0, column=0, sticky="w", padx=(50,5))
         self.lib_combo.bind("<<ComboboxSelected>>", self.on_library_select)
         
         # Colonne 1: Algorithme
@@ -287,12 +523,17 @@ class OptimizerGUI:
         self.scipy_frame.grid_remove()
         self.optuna_frame.grid_remove()
 
-        lib = self.lib_var.get()
-        if lib == "Optuna":
+        mode = self.lib_var.get()
+        if mode == "Screening":
+            # Mode Screening : on utilise le champ Sobol de Scipy
+            self.algo_combo.config(values=["Sobol DoE"])
+            self.algo_var.set("Sobol DoE")
+            self.scipy_frame.grid(row=0, column=2, sticky="w")
+        elif mode == "Optuna":
             self.algo_combo.config(values=self.optuna_algos)
             self.algo_var.set(self.optuna_algos[0])
             self.optuna_frame.grid(row=0, column=2, sticky="w")
-        else:
+        else:  # Scipy
             self.algo_combo.config(values=self.scipy_algos)
             self.algo_var.set(self.scipy_algos[0])
             self.scipy_frame.grid(row=0, column=2, sticky="w")
@@ -336,27 +577,24 @@ class OptimizerGUI:
         return active_ranges, fixed_params, param_order
     
     def evaluate_pipeline(self, params):
-        fichiers = self.image_files
-        if not fichiers:
+        if not self.loaded_images:
             return 0, 0, 0
 
-        # Prepare arguments for the multiprocessing pool
-        pool_args = zip(fichiers, repeat(params))
-        
-        # --- DIAGNOSTIC --- Limiter la taille du pool au nombre de tâches si < cpu_count
-        pool_size = min(len(fichiers), os.cpu_count())
+        pool_args = zip(self.loaded_images, repeat(params))
+
+        # Optimisation Hyperthreading : Utiliser 1.5x les cores physiques pour CPU avec HT
+        # Sur un CPU 12c/24t, cela donne 18 workers au lieu de 12
+        optimal_workers = int(os.cpu_count() * 1.5)
+        pool_size = min(len(self.loaded_images), optimal_workers)
         
         try:
-            # Create a pool of workers with a specific size
             with multiprocessing.Pool(processes=pool_size) as pool:
-                results = pool.map(process_single_file_wrapper, pool_args)
+                results = pool.map(process_image_data_wrapper, pool_args)
             
-            # Filter out None results from failed image reads
             valid_results = [r for r in results if r is not None]
             if not valid_results:
                 return 0, 0, 0
 
-            # Unzip results
             list_tess, list_sharp, list_cont = zip(*valid_results)
 
             avg_tess = sum(list_tess) / len(list_tess) if list_tess else 0
@@ -365,12 +603,9 @@ class OptimizerGUI:
             return avg_tess, avg_sharp, avg_cont
 
         except Exception as e:
-            # Fallback to sequential processing in case of multiprocessing error
             print(f"Erreur de multiprocessing, passage en mode séquentiel: {e}")
             list_tess, list_sharp, list_cont = [], [], []
-            for f in fichiers:
-                img = cv2.imread(f)
-                if img is None: continue
+            for img in self.loaded_images:
                 processed_img = pipeline_complet(img, params)
                 tess, sharp, cont = evaluer_toutes_metriques(processed_img)
                 list_tess.append(tess); list_sharp.append(sharp); list_cont.append(cont)
@@ -381,6 +616,8 @@ class OptimizerGUI:
             return avg_tess, avg_sharp, avg_cont
 
     def start_optimization(self):
+        global has_printed_timings
+        has_printed_timings = False
         self.cancellation_requested.clear()
         self.results_data.clear()
         self.btn_start.config(state="disabled")
@@ -397,10 +634,24 @@ class OptimizerGUI:
         self.trial_count = 0
         for lbl in self.optimal_labels.values(): lbl.config(text="-")
 
-        library = self.lib_var.get()
+        # Pre-load images once before starting the thread
+        self.pre_load_images()
+
+        mode = self.lib_var.get()
         algo = self.algo_var.get()
 
-        if library == "Optuna":
+        if mode == "Screening":
+            # Mode Screening Sobol pur (DoE)
+            try:
+                exponent = int(self.sobol_exponent_var.get())
+                self.update_status_from_thread(f"🔬 Lancement Screening Sobol (2^{exponent} = {2**exponent} points)...")
+                thread = threading.Thread(target=run_sobol_screening, args=(self, exponent, active_ranges, fixed_params))
+                thread.start()
+            except ValueError:
+                messagebox.showerror("Erreur de Saisie", "L'exposant Sobol doit être un entier.")
+                self.finalize_run()
+
+        elif mode == "Optuna":
             try:
                 n_trials = int(self.trials_entry.get())
                 thread = threading.Thread(target=run_optuna_optimization, args=(self, n_trials, active_ranges, fixed_params, algo))

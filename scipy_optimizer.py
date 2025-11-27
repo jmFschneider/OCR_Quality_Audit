@@ -6,12 +6,18 @@ from scipy.stats import qmc
 
 # Wrapper pour la fonction objectif pour compter les appels
 class ObjectiveWrapper:
-    def __init__(self, objective_func):
+    def __init__(self, objective_func, cancellation_event=None):
         self.objective_func = objective_func
+        self.cancellation_event = cancellation_event
         self.evaluations = 0
         self.start_time = None
 
     def __call__(self, params):
+        # Vérification de l'annulation au début de chaque évaluation
+        if self.cancellation_event and self.cancellation_event.is_set():
+            # Le bloc try/except autour de minimize attrapera cette exception
+            raise StopOptimization("Annulation détectée dans l'objectif.")
+
         if self.start_time is None:
             self.start_time = time.time()
         
@@ -21,43 +27,35 @@ class ObjectiveWrapper:
     def get_stats(self):
         return self.evaluations, time.time() - self.start_time if self.start_time else 0
 
+# Exception personnalisée pour arrêter l'optimisation proprement
+class StopOptimization(Exception):
+    pass
+
 def run_scipy_optimization(objective_func, bounds, algorithm, n_sobol_points, n_iterations, update_callback=None, cancellation_event=None):
     """
     Exécute l'optimisation avec Scipy à partir de points de départ générés par une séquence de Sobol.
-
-    :param objective_func: La fonction à optimiser.
-    :param bounds: Les limites des paramètres.
-    :param algorithm: L'algorithme Scipy à utiliser.
-    :param n_sobol_points: Le nombre de points de départ à générer.
-    :param n_iterations: Le nombre maximum d'itérations pour chaque optimisation.
-    :param update_callback: Callback pour mettre à jour l'UI avec la progression.
-    :param cancellation_event: threading.Event pour signaler l'annulation.
-    :return: Le meilleur résultat trouvé.
     """
     lower_bounds = [b[0] for b in bounds]
     upper_bounds = [b[1] for b in bounds]
     
-    # Générateur de séquence de Sobol
     sobol_sampler = qmc.Sobol(d=len(bounds), scramble=True)
     sobol_points = sobol_sampler.random(n=n_sobol_points)
     scaled_sobol_points = qmc.scale(sobol_points, lower_bounds, upper_bounds)
 
     best_result = {"fun": float('inf'), "x": None}
     
-    wrapped_objective = ObjectiveWrapper(objective_func)
+    # Le wrapper vérifie maintenant l'annulation lui-même
+    wrapped_objective = ObjectiveWrapper(objective_func, cancellation_event)
 
-    # Pour l'annulation
-    class StopOptimization(Exception):
-        pass
-
+    # Le callback reste une sécurité supplémentaire
     def callback(xk):
         if cancellation_event and cancellation_event.is_set():
-            raise StopOptimization()
+            raise StopOptimization("Annulation détectée dans le callback.")
 
     for i, start_point in enumerate(scaled_sobol_points):
         if cancellation_event and cancellation_event.is_set():
             if update_callback:
-                update_callback("Optimisation Scipy annulée par l'utilisateur.")
+                update_callback("Optimisation Scipy annulée avant un nouveau point de départ.")
             break
 
         if update_callback:
@@ -77,10 +75,10 @@ def run_scipy_optimization(objective_func, bounds, algorithm, n_sobol_points, n_
                 best_result = result
                 if update_callback:
                     update_callback(f"Nouveau meilleur résultat trouvé : {result.fun:.4f}")
-        except StopOptimization:
+        except StopOptimization as e:
             if update_callback:
-                update_callback(f"Passe d'optimisation {i+1} annulée.")
-            break # Sortir de la boucle for
+                update_callback(f"Arrêt de l'optimisation locale ({e})")
+            break # Sortir de la boucle for principale
 
     evals, duration = wrapped_objective.get_stats()
     if update_callback:
