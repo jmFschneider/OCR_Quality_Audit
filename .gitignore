@@ -9,11 +9,28 @@ __pycache__/
 
 # IDE / Editor
 .idea/
+.claude/settings.local.json
 
-# Generated files
+# Generated files - Screening results
 *.csv
+*.csv~
+screening_sobol_*/
+analysis_screening_*/
 *.log
+
+# Generated files - Optimization results
+resultats_metrics_*.csv
+optim_results_*.csv
+
+# Test images
+test_scans/
 
 # Old files directory
 Premiers essais/
 test_scans - Copie/
+Old__Premiers essais__ne pas utiliser/
+
+# Temporary files
+*.tmp
+*.bak
+*~
