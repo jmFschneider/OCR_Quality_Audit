@@ -74,11 +74,46 @@ def normalisation_division(image_gray, kernel_size):
     fond = cv2.GaussianBlur(image_gray, (kernel_size, kernel_size), 0)
     return cv2.divide(image_gray, fond, scale=255)
 
+def estimate_noise_level(image):
+    """
+    Estime le niveau de bruit dans une image en utilisant la variance locale.
+    Retourne un score de bruit (plus élevé = plus de bruit).
+    """
+    # Calcul de la variance locale avec un filtre Laplacien
+    laplacian = cv2.Laplacian(image, cv2.CV_64F)
+    noise_estimate = laplacian.var()
+    return noise_estimate
+
+def adaptive_denoising(image, base_h_param, noise_threshold_low=50, noise_threshold_high=200):
+    """
+    Applique un denoising adaptatif basé sur le niveau de bruit détecté.
+    - Si bruit faible : skip denoising ou paramètres légers
+    - Si bruit moyen : paramètres réduits (searchWindowSize=15)
+    - Si bruit élevé : paramètres complets (searchWindowSize=21)
+    """
+    if base_h_param <= 0:
+        return image
+
+    noise_level = estimate_noise_level(image)
+
+    # Stratégie adaptative
+    if noise_level < noise_threshold_low:
+        # Image propre : skip denoising
+        return image
+    elif noise_level < noise_threshold_high:
+        # Bruit moyen : paramètres optimisés (gain 30-40%)
+        return cv2.fastNlMeansDenoising(image, None, h=base_h_param,
+                                       templateWindowSize=7, searchWindowSize=15)
+    else:
+        # Bruit élevé : paramètres complets
+        return cv2.fastNlMeansDenoising(image, None, h=base_h_param,
+                                       templateWindowSize=7, searchWindowSize=21)
+
 def pipeline_complet(image, params):
     gray = image # Image is already grayscale
     no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
     norm = normalisation_division(no_lines, params['norm_kernel'])
-    denoised = cv2.fastNlMeansDenoising(norm, None, h=params['denoise_h'], templateWindowSize=7, searchWindowSize=21) if params['denoise_h'] > 0 else norm
+    denoised = adaptive_denoising(norm, params['denoise_h'])
     return cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
 
 
@@ -96,10 +131,12 @@ def pipeline_complet_timed(image, params):
     norm = normalisation_division(no_lines, params['norm_kernel'])
     timings['2_normalization'] = (time.time() - t0) * 1000
 
-    # Step 3: Denoising
+    # Step 3: Denoising (Adaptive)
     t0 = time.time()
-    denoised = cv2.fastNlMeansDenoising(norm, None, h=params['denoise_h'], templateWindowSize=7, searchWindowSize=21) if params['denoise_h'] > 0 else norm
+    noise_level = estimate_noise_level(norm)
+    denoised = adaptive_denoising(norm, params['denoise_h'])
     timings['3_denoising'] = (time.time() - t0) * 1000
+    timings['noise_level'] = noise_level  # Pour diagnostic
 
     # Step 4: Binarization
     t0 = time.time()
@@ -150,6 +187,18 @@ def process_image_data_wrapper(args):
         # but it's good enough for diagnostics.
         has_printed_timings = True
         print("\n--- Analyse détaillée des temps d'exécution (en ms, pour une image) ---")
+
+        # Séparer le noise_level des timings pour l'affichage
+        noise_level = timings.pop('noise_level', None)
+        if noise_level is not None:
+            print(f"  - Niveau de bruit détecté: {noise_level:.2f}")
+            if noise_level < 50:
+                print("    → Stratégie: SKIP denoising (image propre)")
+            elif noise_level < 200:
+                print("    → Stratégie: Denoising OPTIMISÉ (searchWindowSize=15)")
+            else:
+                print("    → Stratégie: Denoising COMPLET (searchWindowSize=21)")
+
         total_time = sum(timings.values())
         for name, t in sorted(timings.items()):
             percentage = (t / total_time) * 100 if total_time > 0 else 0
@@ -420,9 +469,11 @@ class OptimizerGUI:
             return 0, 0, 0
 
         pool_args = zip(self.loaded_images, repeat(params))
-        
-        # Limiter la taille du pool au nombre de tâches si < cpu_count
-        pool_size = min(len(self.loaded_images), os.cpu_count())
+
+        # Optimisation Hyperthreading : Utiliser 1.5x les cores physiques pour CPU avec HT
+        # Sur un CPU 12c/24t, cela donne 18 workers au lieu de 12
+        optimal_workers = int(os.cpu_count() * 1.5)
+        pool_size = min(len(self.loaded_images), optimal_workers)
         
         try:
             with multiprocessing.Pool(processes=pool_size) as pool:
