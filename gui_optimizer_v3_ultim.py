@@ -660,7 +660,7 @@ class OptimizerGUI:
                 messagebox.showerror("Erreur de Saisie", "Le nombre d'essais doit être un entier.")
                 self.finalize_run()
         
-        elif library == "Scipy":
+        elif mode == "Scipy":
             try:
                 exponent = int(self.sobol_exponent_var.get())
                 n_sobol = 2**exponent
