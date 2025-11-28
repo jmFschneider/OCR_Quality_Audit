@@ -273,7 +273,7 @@ import scipy_optimizer
 
 def process_image_data_wrapper(args):
     """
-    Wrapper function to process a single image's data. Takes a tuple of (image_data, params)
+    Wrapper function to process a single image's data. Takes a tuple of (image_data, params, baseline_tess_score)
     as input to be compatible with pool.map.
     """
     global has_printed_timings
@@ -284,7 +284,7 @@ def process_image_data_wrapper(args):
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     cv2.setNumThreads(1)
 
-    img, params = args
+    img, params, baseline_tess_score = args
     if img is None:
         return None
 
@@ -295,8 +295,10 @@ def process_image_data_wrapper(args):
     
     # Step 5: Tesseract OCR
     t0 = time.time()
-    score_tess = get_tesseract_score(processed_img)
-    timings['5_ocr_tesseract'] = (time.time() - t0) * 1000
+    # Calculate processed score, then subtract baseline to get delta
+    score_tess_processed = get_tesseract_score(processed_img)
+    score_tess_delta = score_tess_processed - baseline_tess_score
+    timings['5_ocr_tesseract_delta'] = (time.time() - t0) * 1000
 
     # Step 6: Other metrics
     t0 = time.time()
@@ -330,7 +332,7 @@ def process_image_data_wrapper(args):
         print(f"  - TEMPS TOTAL par image: {total_time:.2f} ms")
         print("----------------------------------------------------------------------\n")
         
-    return score_tess, score_sharp, score_cont
+    return score_tess_delta, score_tess_processed, score_sharp, score_cont
 
 # --- SCREENING SOBOL ---
 
@@ -363,7 +365,7 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
                   'denoise_h': 'denoise_h', 'noise_threshold': 'noise_threshold',
                   'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
 
-    csv_headers = ['point_id', 'score_tesseract', 'score_nettete', 'score_contraste']
+    csv_headers = ['point_id', 'score_tesseract_delta', 'score_tesseract', 'score_nettete', 'score_contraste']
     for p in param_names:
         csv_headers.append(header_map.get(p, p))
 
@@ -400,12 +402,12 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
                 params[param_name] = val
 
         # Évaluer
-        avg_tess, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
+        avg_delta, avg_abs, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
 
         # Sauvegarder
         with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f, delimiter=';')
-            row_data = [idx + 1, avg_tess, avg_sharp, avg_cont]
+            row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
             for p in param_names:
                 if p == 'norm_kernel':
                     row_data.append(params.get('norm_kernel'))
@@ -419,19 +421,19 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
                     row_data.append(params.get(p))
             writer.writerow(row_data)
 
-        # Suivi du meilleur
-        if avg_tess > best_score:
-            best_score = avg_tess
+        # Suivi du meilleur (on optimise sur le delta ou l'absolu, c'est pareil, mais affichons le delta)
+        if avg_delta > best_score:
+            best_score = avg_delta
             best_params = params.copy()
-            gui_app.update_log_from_thread(f"🔥 Point {idx+1}/{n_points}: Nouveau meilleur score = {avg_tess:.2f}%")
+            gui_app.update_log_from_thread(f"🔥 Point {idx+1}/{n_points}: Nouveau meilleur gain = {avg_delta:.2f}%")
         else:
             if (idx + 1) % 10 == 0:  # Log tous les 10 points
-                gui_app.update_log_from_thread(f"   Point {idx+1}/{n_points}: Score = {avg_tess:.2f}%")
+                gui_app.update_log_from_thread(f"   Point {idx+1}/{n_points}: Gain = {avg_delta:.2f}%")
 
         # Mise à jour UI
-        gui_app.on_trial_finish(idx, avg_tess, avg_sharp, avg_cont, params)
+        gui_app.on_trial_finish(idx, avg_delta, avg_abs, avg_sharp, avg_cont, params)
 
-    gui_app.update_status_from_thread(f"✅ Screening terminé! Meilleur score: {best_score:.2f}%")
+    gui_app.update_status_from_thread(f"✅ Screening terminé! Meilleur gain: {best_score:.2f}%")
     gui_app.update_log_from_thread(f"📊 {n_points} points évalués et sauvegardés dans {csv_filename}")
 
     return best_params
@@ -447,7 +449,7 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
     
     header_map = {'line_h': 'line_h_size', 'line_v': 'line_v_size', 'norm_kernel': 'norm_kernel', 'denoise_h': 'denoise_h', 'noise_threshold': 'noise_threshold', 'bin_block': 'bin_block_size', 'bin_c': 'bin_c'}
     dynamic_headers = [header_map[p] for p in all_param_names if p in header_map]
-    csv_headers = ['trial_id', 'score_tesseract', 'score_nettete', 'score_contraste'] + dynamic_headers
+    csv_headers = ['trial_id', 'score_tesseract_delta', 'score_tesseract', 'score_nettete', 'score_contraste'] + dynamic_headers
 
     with open(csv_filename, mode='w', newline='') as f:
         writer = csv.writer(f, delimiter=';')
@@ -474,20 +476,20 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
         
         params.update(current_params)
 
-        avg_tess, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
+        avg_delta, avg_abs, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
 
         try:
             with open(csv_filename, mode='a', newline='') as f:
                 writer = csv.writer(f, delimiter=';')
-                row_data = [trial.number, round(avg_tess, 4), round(avg_sharp, 2), round(avg_cont, 2)]
+                row_data = [trial.number, round(avg_delta, 4), round(avg_abs, 4), round(avg_sharp, 2), round(avg_cont, 2)]
                 for header in dynamic_headers:
                     row_data.append(params.get(header))
                 writer.writerow(row_data)
         except Exception as e: 
             gui_app.update_log_from_thread(f"Erreur CSV (legacy): {e}")
 
-        gui_app.on_trial_finish(trial.number, avg_tess, avg_sharp, avg_cont, params)
-        return avg_tess
+        gui_app.on_trial_finish(trial.number, avg_delta, avg_abs, avg_sharp, avg_cont, params)
+        return avg_delta
 
     def cancellation_callback(study, trial):
         if gui_app.cancellation_requested.is_set():
@@ -524,6 +526,7 @@ class OptimizerGUI:
         self.param_entries = {}
         self.optimal_labels = {}
         self.loaded_images = [] # To store pre-loaded images
+        self.baseline_scores = [] # To store baseline Tesseract scores for each image
         self.default_params = {
             'line_h': (30, 70, 45), 'line_v': (40, 120, 50),
             'norm_kernel': (40, 100, 75), 'denoise_h': (2.0, 20.0, 9.0),
@@ -548,6 +551,8 @@ class OptimizerGUI:
         self.update_log_from_thread("Pré-chargement des images en mémoire (en niveaux de gris)...")
 
         self.loaded_images = []
+        self.baseline_scores = [] # Clear baseline scores as well
+
         if not self.image_files:
             messagebox.showwarning("Aucune image", f"Aucune image trouvée dans le dossier {INPUT_FOLDER}. Cliquez sur 🔄 pour rafraîchir.")
             return
@@ -558,8 +563,12 @@ class OptimizerGUI:
                 # Garder en numpy pour compatibilité pickle/multiprocessing
                 # La conversion UMat se fera dans chaque worker
                 self.loaded_images.append(img)
+                # Calculer le score Tesseract de l'image originale (baseline)
+                baseline_score = get_tesseract_score(img)
+                self.baseline_scores.append(baseline_score)
 
         self.update_log_from_thread(f"{len(self.loaded_images)} images chargées en mémoire.")
+        self.update_log_from_thread(f"{len(self.baseline_scores)} scores de base calculés.")
 
     def create_widgets(self):
         style = ttk.Style()
@@ -709,7 +718,7 @@ class OptimizerGUI:
         if not self.loaded_images:
             return 0, 0, 0
 
-        pool_args = zip(self.loaded_images, repeat(params))
+        pool_args = zip(self.loaded_images, repeat(params), self.baseline_scores)
 
         # Optimisation Hyperthreading : Utiliser 1.5x les cores physiques pour CPU avec HT
         # Sur un CPU 12c/24t, cela donne 18 workers au lieu de 12
@@ -724,25 +733,38 @@ class OptimizerGUI:
             if not valid_results:
                 return 0, 0, 0
 
-            list_tess, list_sharp, list_cont = zip(*valid_results)
+            list_delta, list_abs, list_sharp, list_cont = zip(*valid_results)
 
-            avg_tess = sum(list_tess) / len(list_tess) if list_tess else 0
+            avg_delta = sum(list_delta) / len(list_delta) if list_delta else 0
+            avg_abs = sum(list_abs) / len(list_abs) if list_abs else 0
             avg_sharp = sum(list_sharp) / len(list_sharp) if list_sharp else 0
             avg_cont = sum(list_cont) / len(list_cont) if list_cont else 0
-            return avg_tess, avg_sharp, avg_cont
+            return avg_delta, avg_abs, avg_sharp, avg_cont
 
         except Exception as e:
             print(f"Erreur de multiprocessing, passage en mode séquentiel: {e}")
-            list_tess, list_sharp, list_cont = [], [], []
-            for img in self.loaded_images:
+            list_delta, list_abs, list_sharp, list_cont = [], [], [], []
+            for i, img in enumerate(self.loaded_images):
+                # Mode séquentiel : besoin de recalculer la baseline ou de la récupérer
+                # Comme on a self.baseline_scores, on l'utilise
+                baseline = self.baseline_scores[i] if i < len(self.baseline_scores) else 0
+                
                 processed_img = pipeline_complet(img, params)
-                tess, sharp, cont = evaluer_toutes_metriques(processed_img)
-                list_tess.append(tess); list_sharp.append(sharp); list_cont.append(cont)
+                tess_abs = get_tesseract_score(processed_img)
+                tess_delta = tess_abs - baseline
+                sharp = get_sharpness(processed_img)
+                cont = get_contrast(processed_img)
+                
+                list_delta.append(tess_delta)
+                list_abs.append(tess_abs)
+                list_sharp.append(sharp)
+                list_cont.append(cont)
             
-            avg_tess = sum(list_tess) / len(list_tess) if list_tess else 0
+            avg_delta = sum(list_delta) / len(list_delta) if list_delta else 0
+            avg_abs = sum(list_abs) / len(list_abs) if list_abs else 0
             avg_sharp = sum(list_sharp) / len(list_sharp) if list_sharp else 0
             avg_cont = sum(list_cont) / len(list_cont) if list_cont else 0
-            return avg_tess, avg_sharp, avg_cont
+            return avg_delta, avg_abs, avg_sharp, avg_cont
 
     def start_optimization(self):
         global has_printed_timings
@@ -818,9 +840,9 @@ class OptimizerGUI:
                              current_params[mapped_name] = val
                     
                     params.update(current_params)
-                    t_score, s_score, c_score = self.evaluate_pipeline(params)
-                    self.on_trial_finish(self.trial_count, t_score, s_score, c_score, params)
-                    return -t_score
+                    t_score_delta, t_score_abs, s_score, c_score = self.evaluate_pipeline(params)
+                    self.on_trial_finish(self.trial_count, t_score_delta, t_score_abs, s_score, c_score, params)
+                    return -t_score_delta
 
                 thread = threading.Thread(target=self.run_scipy_thread, args=(objective_for_scipy, bounds, algo, n_sobol, n_iter))
                 thread.start()
@@ -914,24 +936,25 @@ class OptimizerGUI:
         self.master.after(0, self.btn_cancel.config, {'state': 'disabled'})
         self.master.after(0, self.save_results_to_csv)
 
-    def on_trial_finish(self, trial_num, t_score, s_score, c_score, params):
-        msg = f"[Essai {trial_num}] Tess: {t_score:.2f}% | Netteté: {s_score:.1f} | Contraste: {c_score:.1f}"
+    def on_trial_finish(self, trial_num, t_score_delta, t_score_abs, s_score, c_score, params):
+        msg = f"[Essai {trial_num}] Delta Tess: {t_score_delta:.2f}% | Abs Tess: {t_score_abs:.2f}% | Netteté: {s_score:.1f} | Contraste: {c_score:.1f}"
         self.update_log_from_thread(msg)
 
         # Enregistrement des données pour le CSV
         trial_data = {
             'params': params.copy(),
             'scores': {
-                'tesseract': round(t_score, 4),
+                'tesseract_delta': round(t_score_delta, 4),
+                'tesseract': round(t_score_abs, 4),
                 'nettete': round(s_score, 2),
                 'contraste': round(c_score, 2)
             }
         }
         self.results_data.append(trial_data)
 
-        if t_score > self.best_score_so_far:
-            self.best_score_so_far = t_score
-            self.update_status_from_thread(f"🔥 RECORD TESSERACT : {t_score:.2f}% (Essai {trial_num})")
+        if t_score_delta > self.best_score_so_far:
+            self.best_score_so_far = t_score_delta
+            self.update_status_from_thread(f"🔥 RECORD GAIN : {t_score_delta:.2f}% (Essai {trial_num})")
             self.master.after(0, self.update_optimal_display, params)
 
     def update_optimal_display(self, params):
