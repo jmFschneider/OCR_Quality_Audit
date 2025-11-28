@@ -442,6 +442,253 @@ Une fois OpenCV-CUDA compilé et validé :
 
 ---
 
+## 🔀 Stratégie Git pour la Migration CUDA
+
+### **Objectif**
+Adapter le code du projet pour Ubuntu/CUDA tout en préservant la version Windows/OpenCL fonctionnelle.
+
+### **Approche recommandée : Feature Branch**
+
+#### **Option 1 : Branche dédiée CUDA (RECOMMANDÉ pour démarrer)**
+
+```bash
+# Sur Ubuntu, après compilation OpenCV-CUDA réussie
+git checkout main
+git pull origin main
+git checkout -b feature/cuda-migration
+
+# Travailler sur cette branche
+# - Adapter le code pour CUDA
+# - Tester les performances
+# - Valider les résultats
+
+# Commiter progressivement
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Migration GaussianBlur vers cv2.cuda"
+
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Migration variance_laplacien vers cv2.cuda"
+
+# Pousser la branche
+git push origin feature/cuda-migration
+
+# Une fois validé : Pull Request vers main
+```
+
+**Avantages** :
+- ✅ Code Windows (OpenCL) reste fonctionnel sur `main`
+- ✅ Vous pouvez tester CUDA sans casser l'existant
+- ✅ Facile de comparer performances avant/après
+- ✅ Possibilité de faire des allers-retours
+- ✅ Historique propre avec Pull Request
+
+---
+
+#### **Option 2 : Compatibilité croisée Windows + Ubuntu (IDÉAL long terme)**
+
+Rendre le code **compatible Windows ET Ubuntu** avec détection automatique :
+
+```python
+# Détection de la plateforme et capacités GPU
+USE_CUDA = False
+USE_OPENCL = False
+
+if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+    USE_CUDA = True
+    print("🚀 Mode CUDA (Ubuntu + NVIDIA)")
+elif cv2.ocl.haveOpenCL():
+    USE_OPENCL = True
+    print("🚀 Mode OpenCL (Windows)")
+else:
+    print("⚠️ Mode CPU uniquement")
+
+# Fonctions adaptatives
+def apply_gaussian_blur(image, kernel_size):
+    """GaussianBlur adaptatif selon plateforme."""
+    if USE_CUDA:
+        # Version CUDA pour Ubuntu
+        gpu_img = cv2.cuda_GpuMat()
+        gpu_img.upload(image)
+        gaussian_filter = cv2.cuda.createGaussianFilter(
+            cv2.CV_8U, cv2.CV_8U,
+            (kernel_size, kernel_size), 0
+        )
+        gpu_result = gaussian_filter.apply(gpu_img)
+        return gpu_result.download()
+    elif USE_OPENCL:
+        # Version OpenCL pour Windows
+        umat = cv2.UMat(image)
+        result = cv2.GaussianBlur(umat, (kernel_size, kernel_size), 0)
+        return result.get()
+    else:
+        # Fallback CPU
+        return cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
+```
+
+**Branche suggérée** : `feature/cross-platform-gpu`
+
+**Avantages** :
+- ✅ Un seul code source pour Windows et Ubuntu
+- ✅ Détection automatique de la meilleure accélération disponible
+- ✅ Fallback CPU si pas de GPU
+- ✅ Maintenance simplifiée
+
+---
+
+### **Workflow Git détaillé recommandé**
+
+#### **Phase 1 : Préparation (maintenant, sur Windows)**
+
+```bash
+# Créer la branche depuis main
+git checkout main
+git pull origin main
+git checkout -b feature/cuda-migration
+git push -u origin feature/cuda-migration
+```
+
+#### **Phase 2 : Migration (sur Ubuntu)**
+
+```bash
+# Sur Ubuntu, cloner et récupérer la branche
+git clone https://github.com/jmFschneider/OCR_Quality_Audit
+cd OCR_Quality_Audit
+git checkout feature/cuda-migration
+
+# Après compilation OpenCV-CUDA réussie
+# Modifier le code progressivement
+
+# Commits granulaires (recommandé)
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Add CUDA detection and initialization"
+
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Migrate normalisation_division to CUDA"
+
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Migrate variance_laplacien to CUDA"
+
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Migrate all preprocessing functions to CUDA"
+
+# Pousser régulièrement
+git push origin feature/cuda-migration
+```
+
+#### **Phase 3 : Validation et benchmarks**
+
+```bash
+# Ajouter les résultats de benchmarks
+mkdir -p benchmarks
+# ... créer fichier avec résultats ...
+git add benchmarks/cuda_vs_opencl_300dpi.md
+git commit -m "docs(cuda): Add performance benchmarks 300 DPI CUDA vs OpenCL"
+
+# Commit final avec résultats
+git add gui_optimizer_v3_ultim.py
+git commit -m "feat(cuda): Complete CUDA migration - 2.5x speedup on 300 DPI images"
+git push origin feature/cuda-migration
+```
+
+#### **Phase 4 : Merge via Pull Request**
+
+Sur GitHub :
+1. Créer Pull Request `feature/cuda-migration` → `main`
+2. Description détaillée :
+   - Résumé des modifications
+   - Benchmarks avant/après
+   - Instructions de test
+3. Review du code
+4. Merge vers `main`
+
+---
+
+### **Structure de branches suggérée**
+
+```
+main (stable, actuellement Windows/OpenCL)
+  │
+  ├── feature/cuda-migration (Ubuntu/CUDA uniquement)
+  │   └── Objectif : migration rapide pour tester CUDA
+  │
+  └── feature/cross-platform-gpu (Windows + Ubuntu)
+      └── Objectif : code universel (à créer après validation CUDA)
+```
+
+---
+
+### **Convention de commits pour cette migration**
+
+Format recommandé :
+```
+<type>(cuda): <description courte>
+
+[corps optionnel avec détails]
+```
+
+**Types courants** :
+- `feat(cuda):` - Nouvelles fonctionnalités CUDA
+- `fix(cuda):` - Corrections de bugs
+- `perf(cuda):` - Améliorations de performance
+- `docs(cuda):` - Documentation
+- `test(cuda):` - Ajout/modification de tests
+- `refactor(cuda):` - Refactoring sans changement fonctionnel
+
+**Exemples concrets** :
+```bash
+git commit -m "feat(cuda): Add cv2.cuda support detection and initialization"
+
+git commit -m "feat(cuda): Implement CUDA-accelerated GaussianBlur in preprocessing"
+
+git commit -m "perf(cuda): 2.5x speedup on 300 DPI images with full CUDA pipeline"
+
+git commit -m "docs(cuda): Add CUDA vs OpenCL benchmark results"
+
+git commit -m "fix(cuda): Handle GPU memory cleanup in error cases"
+
+git commit -m "feat(cuda): Add cross-platform GPU detection (CUDA/OpenCL/CPU)"
+```
+
+---
+
+### **Recommandation finale pour votre projet**
+
+**Approche en 2 temps** :
+
+1. **Court terme - Validation CUDA** :
+   - Créer `feature/cuda-migration`
+   - Migrer uniquement vers CUDA (pas de compatibilité OpenCL)
+   - Valider les performances sur Ubuntu
+   - Benchmarker vs Phase 2
+   - **Durée estimée** : 2-3 jours de travail
+
+2. **Moyen terme - Code universel** (si CUDA validé) :
+   - Créer `feature/cross-platform-gpu`
+   - Ajouter détection CUDA/OpenCL/CPU
+   - Refactorer les fonctions pour supporter les 3 modes
+   - **Avantage** : Un seul code pour Windows et Ubuntu
+   - **Durée estimée** : 1-2 jours supplémentaires
+
+**Ou bien** :
+- Si performances CUDA excellentes → Ubuntu devient plateforme principale
+- Merger `feature/cuda-migration` vers `main`
+- Archiver la version Windows/OpenCL dans une branche `legacy/windows-opencl`
+
+---
+
+### **Checklist avant de démarrer la migration**
+
+Avant de créer la branche `feature/cuda-migration` :
+
+- [ ] OpenCV-CUDA compilé et validé sur Ubuntu
+- [ ] `python3 test_cuda.py` réussit tous les tests
+- [ ] Benchmark simple montre bien speedup CUDA vs CPU
+- [ ] Environnement Python Ubuntu opérationnel
+- [ ] Git configuré sur Ubuntu (`git config --global user.name/email`)
+- [ ] Accès SSH à GitHub depuis Ubuntu (ou HTTPS avec token)
+
+---
+
 ## 📚 Ressources
 
 - **OpenCV CUDA Documentation** : https://docs.opencv.org/4.8.0/d1/d1a/group__cuda.html
