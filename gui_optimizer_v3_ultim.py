@@ -46,6 +46,10 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+# Global flag to control GPU info printing
+# Read from environment variable to support multiprocessing inheritance on Windows
+_SHOULD_PRINT_GPU_INFO = os.environ.get('OCR_DEBUG_MODE', '0') == '1'
+
 # --- GLOBAL FLAG FOR TIMING ---
 # This flag ensures that the detailed timing breakdown is printed only once per run.
 # It's not perfectly thread-safe across processes but is sufficient for this diagnostic purpose.
@@ -60,20 +64,22 @@ USE_GPU = False
 if cv2.ocl.haveOpenCL():
     cv2.ocl.setUseOpenCL(True)
     USE_GPU = True
-    print("\n" + "="*70)
-    print("🚀 PHASE 2 - OPTIMISATIONS GPU ACTIVÉES")
-    print("="*70)
-    print("✅ OpenCL activé pour OpenCV (accélération GPU UMat)")
-    print("📊 Opérations GPU-accelerated:")
-    print("   • GaussianBlur (normalisation)")
-    print("   • morphologyEx (suppression lignes)")
-    print("   • threshold (binarisation)")
-    print("   • Laplacian (estimation bruit, netteté)")
-    print("   • divide (normalisation)")
-    print("🎯 Gain estimé: +10-15% sur les opérations OpenCV")
-    print("="*70 + "\n")
+    if _SHOULD_PRINT_GPU_INFO:
+        print("\n" + "="*70)
+        print("🚀 PHASE 2 - OPTIMISATIONS GPU ACTIVÉES")
+        print("="*70)
+        print("✅ OpenCL activé pour OpenCV (accélération GPU UMat)")
+        print("📊 Opérations GPU-accelerated:")
+        print("   • GaussianBlur (normalisation)")
+        print("   • morphologyEx (suppression lignes)")
+        print("   • threshold (binarisation)")
+        print("   • Laplacian (estimation bruit, netteté)")
+        print("   • divide (normalisation)")
+        print("🎯 Gain estimé: +10-15% sur les opérations OpenCV")
+        print("="*70 + "\n")
 else:
-    print("⚠️  OpenCL non disponible - Mode CPU uniquement")
+    if _SHOULD_PRINT_GPU_INFO:
+        print("⚠️  OpenCL non disponible - Mode CPU uniquement")
 
 # --- CORE FUNCTIONS (GPU-Optimized) ---
 
@@ -271,6 +277,34 @@ def pipeline_complet_timed(image, params):
 
 import scipy_optimizer
 
+def process_image_data_fast(args):
+    """
+    Version optimisée pour la production :
+    - Pas de mesure de temps (time.time)
+    - Pas de print
+    - Appel direct au pipeline sans overhead
+    """
+    # FORCER LE MONO-THREADING
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    cv2.setNumThreads(1)
+
+    img, params, baseline_tess_score = args
+    if img is None: return None
+
+    # Exécution directe du pipeline (sans timings)
+    processed_img = pipeline_complet(img, params)
+
+    # Calcul des scores
+    score_tess_processed = get_tesseract_score(processed_img)
+    score_tess_delta = score_tess_processed - baseline_tess_score
+    
+    score_sharp = get_sharpness(processed_img)
+    score_cont = get_contrast(processed_img)
+
+    return score_tess_delta, score_tess_processed, score_sharp, score_cont
+
 def process_image_data_wrapper(args):
     """
     Wrapper function to process a single image's data. Takes a tuple of (image_data, params, baseline_tess_score)
@@ -378,6 +412,9 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
     # Évaluer chaque point
     best_score = 0
     best_params = None
+    
+    csv_buffer = []
+    BATCH_SIZE = 50
 
     for idx, sample in enumerate(scaled_samples):
         if gui_app.cancellation_requested.is_set():
@@ -404,22 +441,31 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
         # Évaluer
         avg_delta, avg_abs, avg_sharp, avg_cont = gui_app.evaluate_pipeline(params)
 
-        # Sauvegarder
-        with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f, delimiter=';')
-            row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
-            for p in param_names:
-                if p == 'norm_kernel':
-                    row_data.append(params.get('norm_kernel'))
-                elif p == 'bin_block':
-                    row_data.append(params.get('bin_block_size'))
-                elif p == 'line_h':
-                    row_data.append(params.get('line_h_size'))
-                elif p == 'line_v':
-                    row_data.append(params.get('line_v_size'))
-                else:
-                    row_data.append(params.get(p))
-            writer.writerow(row_data)
+        # Ajouter au buffer CSV
+        row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
+        for p in param_names:
+            if p == 'norm_kernel':
+                row_data.append(params.get('norm_kernel'))
+            elif p == 'bin_block':
+                row_data.append(params.get('bin_block_size'))
+            elif p == 'line_h':
+                row_data.append(params.get('line_h_size'))
+            elif p == 'line_v':
+                row_data.append(params.get('line_v_size'))
+            else:
+                row_data.append(params.get(p))
+        
+        csv_buffer.append(row_data)
+
+        # Écriture par lots (Batching)
+        if len(csv_buffer) >= BATCH_SIZE:
+            try:
+                with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f, delimiter=';')
+                    writer.writerows(csv_buffer)
+                csv_buffer = [] # Reset buffer
+            except Exception as e:
+                gui_app.update_log_from_thread(f"Erreur écriture CSV batch: {e}")
 
         # Suivi du meilleur (on optimise sur le delta ou l'absolu, c'est pareil, mais affichons le delta)
         if avg_delta > best_score:
@@ -433,6 +479,15 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
         # Mise à jour UI
         gui_app.on_trial_finish(idx, avg_delta, avg_abs, avg_sharp, avg_cont, params)
 
+    # Vider le reste du buffer à la fin ou si annulé
+    if csv_buffer:
+        try:
+            with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f, delimiter=';')
+                writer.writerows(csv_buffer)
+        except Exception as e:
+            gui_app.update_log_from_thread(f"Erreur écriture CSV final flush: {e}")
+
     gui_app.update_status_from_thread(f"✅ Screening terminé! Meilleur gain: {best_score:.2f}%")
     gui_app.update_log_from_thread(f"📊 {n_points} points évalués et sauvegardés dans {csv_filename}")
 
@@ -441,6 +496,8 @@ def run_sobol_screening(gui_app, n_sobol_exp, param_ranges, fixed_params):
 # --- OPTUNA & LOGGING ---
 
 def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_choice):
+    # Note: Optuna saves trial by trial, batching is harder to implement cleanly here without side effects.
+    # Keeping it per-trial is acceptable for Optuna as n_trials is usually lower than Sobol screening.
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_filename = f"resultats_metrics_{algo_choice}_{timestamp}.csv"
@@ -643,6 +700,10 @@ class OptimizerGUI:
         # Colonne 4: Boutons d'action
         btn_frame = ttk.Frame(ctrl_frame)
         btn_frame.grid(row=0, column=4, sticky="e", padx=5)
+        
+        self.debug_mode_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(btn_frame, text="Debug/Timing", variable=self.debug_mode_var).pack(side="left", padx=5)
+        
         self.btn_start = ttk.Button(btn_frame, text="▶ LANCER", command=self.start_optimization)
         self.btn_start.pack(side="left")
         self.btn_cancel = ttk.Button(btn_frame, text="⏹ ANNULER", command=self.request_cancellation, state="disabled")
@@ -725,9 +786,12 @@ class OptimizerGUI:
         optimal_workers = int(os.cpu_count() * 1.5)
         pool_size = min(len(self.loaded_images), optimal_workers)
         
+        # Choix de la fonction worker selon le mode
+        worker_func = process_image_data_wrapper if self.debug_mode_var.get() else process_image_data_fast
+
         try:
             with multiprocessing.Pool(processes=pool_size) as pool:
-                results = pool.map(process_image_data_wrapper, pool_args)
+                results = pool.map(worker_func, pool_args)
             
             valid_results = [r for r in results if r is not None]
             if not valid_results:
@@ -768,7 +832,17 @@ class OptimizerGUI:
 
     def start_optimization(self):
         global has_printed_timings
+        # global _SHOULD_PRINT_GPU_INFO # No longer needed directly
+
         has_printed_timings = False
+        
+        # Set environment variable for child processes (Windows spawn support)
+        os.environ['OCR_DEBUG_MODE'] = '1' if self.debug_mode_var.get() else '0'
+        
+        # Update local global for main process too (re-evaluate based on env var just set)
+        global _SHOULD_PRINT_GPU_INFO
+        _SHOULD_PRINT_GPU_INFO = os.environ.get('OCR_DEBUG_MODE') == '1'
+
         self.cancellation_requested.clear()
         self.results_data.clear()
         self.btn_start.config(state="disabled")
