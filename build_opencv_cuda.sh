@@ -74,6 +74,10 @@ echo -e "${GREEN}✓ Driver NVIDIA OK ($(nvidia-smi --query-gpu=driver_version -
 
 echo -e "\n${YELLOW}[2/7] Installation CUDA Toolkit 11.8...${NC}"
 
+# Exporter PATH CUDA immédiatement dans ce script (ne pas utiliser .bashrc)
+export PATH=/usr/local/cuda-11.8/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
+
 if command -v nvcc &> /dev/null; then
     CUDA_VERSION=$(nvcc --version | grep "release" | sed -n 's/.*release \([0-9.]*\).*/\1/p')
     echo -e "${GREEN}✓ CUDA déjà installé (version $CUDA_VERSION)${NC}"
@@ -87,15 +91,35 @@ else
     echo "Installation CUDA Toolkit 11.8..."
     sudo apt install -y cuda-toolkit-11-8
 
-    # Configuration PATH
+    # Réexporter PATH après installation
+    export PATH=/usr/local/cuda-11.8/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
+
+    # Ajouter à .bashrc pour les sessions futures (optionnel)
     if ! grep -q "/usr/local/cuda-11.8/bin" ~/.bashrc; then
+        echo '' >> ~/.bashrc
+        echo '# CUDA Toolkit 11.8' >> ~/.bashrc
         echo 'export PATH=/usr/local/cuda-11.8/bin:$PATH' >> ~/.bashrc
         echo 'export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
     fi
-    source ~/.bashrc
 
     echo -e "${GREEN}✓ CUDA Toolkit installé${NC}"
 fi
+
+# Vérification CRITIQUE que nvcc est accessible
+if ! command -v nvcc &> /dev/null; then
+    echo -e "${RED}ERREUR: nvcc toujours introuvable après installation CUDA${NC}"
+    echo -e "${YELLOW}PATH actuel: $PATH${NC}"
+    echo -e "${YELLOW}LD_LIBRARY_PATH actuel: $LD_LIBRARY_PATH${NC}"
+    echo ""
+    echo "Solutions possibles:"
+    echo "  1. Vérifier que CUDA est bien installé: ls -la /usr/local/ | grep cuda"
+    echo "  2. Installer manuellement: sudo apt install cuda-toolkit-11-8"
+    echo "  3. Relancer le script après installation"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ nvcc accessible: $(which nvcc)${NC}"
 
 ################################################################################
 # Étape 3 : Installation des dépendances
@@ -112,9 +136,19 @@ sudo apt install -y \
     libgtk-3-dev \
     libatlas-base-dev gfortran \
     python3-dev python3-pip python3-venv \
+    python3-numpy \
     libtbb2 libtbb-dev
 
-echo -e "${GREEN}✓ Dépendances installées${NC}"
+echo -e "${GREEN}✓ Dépendances système installées${NC}"
+
+# Vérifier NumPy (CRITIQUE pour les bindings Python)
+echo "Vérification de NumPy..."
+if ! python3 -c "import numpy" 2>/dev/null; then
+    echo -e "${YELLOW}Installation de NumPy via pip3...${NC}"
+    pip3 install numpy
+fi
+NUMPY_VERSION=$(python3 -c "import numpy; print(numpy.__version__)")
+echo -e "${GREEN}✓ NumPy $NUMPY_VERSION disponible${NC}"
 
 ################################################################################
 # Étape 4 : Téléchargement sources OpenCV
@@ -170,7 +204,13 @@ echo "  Executable: $PYTHON3_EXECUTABLE"
 echo "  Include: $PYTHON3_INCLUDE_DIR"
 echo "  Packages: $PYTHON3_PACKAGES_PATH"
 
-# Configuration CMake
+# Vérifier que nvcc est toujours accessible avant CMake
+echo "Vérification finale de l'environnement CUDA avant CMake..."
+echo "  nvcc: $(which nvcc)"
+echo "  Version: $(nvcc --version | grep release)"
+
+# Configuration CMake avec logging détaillé
+echo -e "${YELLOW}Lancement de CMake...${NC}"
 cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D CMAKE_INSTALL_PREFIX=/usr/local \
       -D OPENCV_EXTRA_MODULES_PATH="$BUILD_DIR/opencv_contrib/modules" \
@@ -191,16 +231,51 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D PYTHON3_EXECUTABLE=$PYTHON3_EXECUTABLE \
       -D PYTHON3_INCLUDE_DIR=$PYTHON3_INCLUDE_DIR \
       -D PYTHON3_PACKAGES_PATH=$PYTHON3_PACKAGES_PATH \
-      ..
+      .. | tee cmake_output.log
 
-# Vérifier la configuration CUDA
+# Vérifications détaillées de la configuration
+echo -e "\n${YELLOW}Vérification de la configuration CMake...${NC}"
+
+# Vérifier CUDA
 if grep -q "NVIDIA CUDA.*YES" CMakeCache.txt; then
-    echo -e "${GREEN}✓ CUDA activé dans la configuration${NC}"
+    CUDA_VER=$(grep "CUDA_VERSION" CMakeCache.txt | grep -v "INTERNAL" | head -1 | cut -d= -f2)
+    echo -e "${GREEN}✓ CUDA activé (version $CUDA_VER)${NC}"
 else
     echo -e "${RED}ERREUR: CUDA non activé dans CMake${NC}"
-    echo "Vérifiez la sortie de CMake ci-dessus"
+    echo -e "${YELLOW}Détails de la configuration CUDA:${NC}"
+    grep -i cuda cmake_output.log | head -20
+    echo ""
+    echo "Vérifiez que:"
+    echo "  1. nvcc est accessible: which nvcc"
+    echo "  2. CUDA Toolkit est installé: ls /usr/local/cuda-11.8/"
+    echo "  3. PATH et LD_LIBRARY_PATH sont corrects"
     exit 1
 fi
+
+# Vérifier GPU Architecture
+if grep -q "CUDA_ARCH_BIN:STRING=$CUDA_ARCH_BIN" CMakeCache.txt; then
+    echo -e "${GREEN}✓ Architecture GPU: $CUDA_ARCH_BIN (Pascal - GTX 1080)${NC}"
+else
+    echo -e "${YELLOW}⚠ Architecture GPU non définie correctement${NC}"
+fi
+
+# Vérifier Python bindings
+if grep -q "BUILD_opencv_python3:BOOL=ON" CMakeCache.txt; then
+    echo -e "${GREEN}✓ Bindings Python3 activés${NC}"
+else
+    echo -e "${RED}ERREUR: Bindings Python3 non activés${NC}"
+    exit 1
+fi
+
+# Vérifier NumPy
+if grep -q "PYTHON3_NUMPY_INCLUDE_DIRS" CMakeCache.txt; then
+    NUMPY_PATH=$(grep "PYTHON3_NUMPY_INCLUDE_DIRS" CMakeCache.txt | cut -d= -f2)
+    echo -e "${GREEN}✓ NumPy détecté: $NUMPY_PATH${NC}"
+else
+    echo -e "${YELLOW}⚠ NumPy non détecté - Les bindings Python pourraient ne pas se construire${NC}"
+fi
+
+echo -e "${GREEN}✓ Configuration CMake validée${NC}"
 
 ################################################################################
 # Étape 6 : Compilation
