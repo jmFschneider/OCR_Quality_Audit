@@ -212,6 +212,9 @@ else
     PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
 fi
 
+# 🚨 AJOUT CRITIQUE pour les bindings Python avec NumPy
+NUMPY_INC=$(python3 -c "import numpy; print(numpy.get_include())")
+
 echo "Configuration Python:"
 echo "  Version: $PYTHON_VERSION"
 echo "  Executable: $PYTHON3_EXECUTABLE"
@@ -245,6 +248,7 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D PYTHON3_EXECUTABLE=$PYTHON3_EXECUTABLE \
       -D PYTHON3_INCLUDE_DIR=$PYTHON3_INCLUDE_DIR \
       -D PYTHON3_PACKAGES_PATH=$PYTHON3_PACKAGES_PATH \
+	  -D PYTHON3_NUMPY_INCLUDE_DIRS=$NUMPY_INC \
       .. | tee cmake_output.log
 
 # Vérifications détaillées de la configuration
