@@ -2,7 +2,7 @@
 
 ################################################################################
 # Script de compilation automatique OpenCV 4.8.0 avec CUDA
-# Pour Ubuntu 20.04 + NVIDIA RTX 1080
+# Pour Ubuntu 20.04/22.04 + NVIDIA RTX 1080
 #
 # Usage: ./build_opencv_cuda.sh
 # Durée: ~45-60 minutes (12 cores)
@@ -35,14 +35,17 @@ BUILD_DIR="$HOME/opencv_build"
 echo -e "${YELLOW}[1/7] Vérification de la configuration...${NC}"
 
 # Vérifier Ubuntu
-if ! lsb_release -a 2>/dev/null | grep -q "20.04"; then
-    echo -e "${RED}ERREUR: Ce script est conçu pour Ubuntu 20.04${NC}"
-    echo "Votre version: $(lsb_release -rs)"
+UBUNTU_VERSION=$(lsb_release -rs)
+if [[ ! "$UBUNTU_VERSION" =~ ^(20.04|22.04)$ ]]; then
+    echo -e "${RED}ERREUR: Ce script est conçu pour Ubuntu 20.04 ou 22.04${NC}"
+    echo "Votre version: $UBUNTU_VERSION"
     read -p "Continuer quand même ? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
+else
+    echo -e "${GREEN}✓ Ubuntu $UBUNTU_VERSION détecté${NC}"
 fi
 
 # Vérifier NVIDIA GPU
@@ -196,10 +199,21 @@ mkdir build && cd build
 
 # Détecter Python
 PYTHON3_EXECUTABLE=$(which python3)
-PYTHON3_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())")
-PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
+PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+
+# Fix distutils pour Python 3.10+ (deprecated depuis Python 3.10, supprimé en 3.12)
+if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+    echo -e "${YELLOW}Python $PYTHON_VERSION détecté - Utilisation de sysconfig${NC}"
+    PYTHON3_INCLUDE_DIR=$(python3 -c "import sysconfig; print(sysconfig.get_path('include'))")
+    PYTHON3_PACKAGES_PATH=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+else
+    echo -e "${YELLOW}Python $PYTHON_VERSION détecté - Utilisation de distutils${NC}"
+    PYTHON3_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc; print(get_python_inc())")
+    PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
+fi
 
 echo "Configuration Python:"
+echo "  Version: $PYTHON_VERSION"
 echo "  Executable: $PYTHON3_EXECUTABLE"
 echo "  Include: $PYTHON3_INCLUDE_DIR"
 echo "  Packages: $PYTHON3_PACKAGES_PATH"
