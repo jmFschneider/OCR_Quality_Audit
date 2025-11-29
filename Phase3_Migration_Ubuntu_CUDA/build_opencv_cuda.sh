@@ -35,15 +35,16 @@ BUILD_DIR="$HOME/opencv_build"
 echo -e "${YELLOW}[1/7] Vérification de la configuration...${NC}"
 
 # Vérifier Ubuntu
-if ! lsb_release -a 2>/dev/null | grep -q "20.04"; then
-    echo -e "${RED}ERREUR: Ce script est conçu pour Ubuntu 20.04${NC}"
-    echo "Votre version: $(lsb_release -rs)"
+if [[ "$UBUNTU_VERSION" != "20.04" && "$UBUNTU_VERSION" != "22.04" ]]; then
+    echo -e "${RED}ATTENTION: Ce script a été conçu pour Ubuntu 20.04 / 22.04${NC}"
+    echo "Votre version: $UBUNTU_VERSION"
     read -p "Continuer quand même ? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
 fi
+
 
 # Vérifier NVIDIA GPU
 if ! lspci | grep -qi nvidia; then
@@ -84,9 +85,17 @@ if command -v nvcc &> /dev/null; then
 else
     echo "Installation du dépôt NVIDIA..."
     cd /tmp
-    wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
+
+    if [[ "$UBUNTU_VERSION" == "22.04" ]]; then
+        CUDA_REPO_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb"
+    else
+        CUDA_REPO_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb"
+    fi
+
+    wget -q "$CUDA_REPO_URL" -O cuda-keyring_1.0-1_all.deb
     sudo dpkg -i cuda-keyring_1.0-1_all.deb
     sudo apt update
+
 
     echo "Installation CUDA Toolkit 11.8..."
     sudo apt install -y cuda-toolkit-11-8
@@ -215,17 +224,17 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D CMAKE_INSTALL_PREFIX=/usr/local \
       -D OPENCV_EXTRA_MODULES_PATH="$BUILD_DIR/opencv_contrib/modules" \
       -D WITH_CUDA=ON \
-      -D WITH_CUDNN=OFF \
-      -D OPENCV_DNN_CUDA=OFF \
+      -D CUDA_ARCH_BIN=$CUDA_ARCH_BIN \
+      -D CUDA_ARCH_PTX="" \
       -D ENABLE_FAST_MATH=1 \
       -D CUDA_FAST_MATH=1 \
-      -D WITH_CUBLAS=1 \
-      -D CUDA_ARCH_BIN=$CUDA_ARCH_BIN \
-      -D CUDA_ARCH_PTX=$CUDA_ARCH_BIN \
+      -D WITH_CUBLAS=ON \
+      -D WITH_CUDNN=ON \    # quand on aura installé cuDNN, c’est ce qu’on voudra
+      -D OPENCV_DNN_CUDA=ON \
       -D OPENCV_ENABLE_NONFREE=ON \
-      -D WITH_OPENGL=ON \
-      -D WITH_OPENCL=ON \
       -D WITH_TBB=ON \
+      -D WITH_OPENCL=OFF \
+      -D WITH_OPENGL=OFF \
       -D BUILD_EXAMPLES=OFF \
       -D BUILD_opencv_python3=ON \
       -D PYTHON3_EXECUTABLE=$PYTHON3_EXECUTABLE \
