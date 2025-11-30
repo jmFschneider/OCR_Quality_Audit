@@ -35,35 +35,34 @@ Configuration :
 import os
 import sys
 import multiprocessing
+import platform
 
 # --- FIX 1 : Forcer X11 pour Tkinter (évite les crashs Wayland sous Ubuntu 22.04) ---
-os.environ["GDK_BACKEND"] = "x11"
-os.environ["tk_library"] = "/usr/lib/x86_64-linux-gnu/tk8.6" # Optionnel, aide parfois
+if platform.system() == 'Linux':
+    os.environ["GDK_BACKEND"] = "x11"
+    # Note : tk_library est généralement détecté automatiquement
+    # os.environ["tk_library"] = "/usr/lib/x86_64-linux-gnu/tk8.6"
 
 # --- FIX 2 : Paramètres OpenCV ---
 os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(2**64)
-# Note : QT_QPA... n'est utile que pour PyQt, mais ne gêne pas Tkinter.
-os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
+
+# --- FIX 3 : Désactiver variables problématiques pour OpenCV ---
+# Ne pas définir QT_QPA_PLATFORM_PLUGIN_PATH avec une chaîne vide
+# car cela peut causer des erreurs "stoull" dans OpenCV
+if "QT_QPA_PLATFORM_PLUGIN_PATH" in os.environ:
+    del os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"]
 
 import cv2
-import numpy as np
-# ... suite de vos imports ...
-import tkinter as tk
-# ...
-
 import numpy as np
 import pytesseract
 import optuna
 from optuna.samplers import TPESampler, QMCSampler, NSGAIISampler
-import sys
-import platform
 from glob import glob
 import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import csv
 from datetime import datetime
-import multiprocessing
 from itertools import repeat
 import time
 

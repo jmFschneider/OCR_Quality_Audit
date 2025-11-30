@@ -15,6 +15,12 @@ Guide complet pour installer et exécuter **OCR Quality Audit** sur Ubuntu 22.04
 7. [Lancement de l'application](#lancement-de-lapplication)
 8. [Dépannage](#dépannage)
 
+
+
+ npm install -g @anthropic-ai/claude-code
+
+45 86 34
+
 ---
 
 ## Prérequis matériels
