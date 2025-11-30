@@ -2,7 +2,7 @@
 
 ################################################################################
 # Script de compilation automatique OpenCV 4.8.0 avec CUDA
-# Pour Ubuntu 20.04/22.04 + NVIDIA RTX 1080
+# Pour Ubuntu 20.04/22.04 + NVIDIA RTX 1080 Ti
 #
 # Usage: ./build_opencv_cuda.sh
 # Durée: ~45-60 minutes (12 cores)
@@ -100,8 +100,8 @@ else
     sudo apt update
 
 
-    echo "Installation CUDA Toolkit 11.8..."
-    sudo apt install -y cuda-toolkit-11-8
+    echo "Installation CUDA Toolkit 11.8 et cuDNN..."
+    sudo apt install -y cuda-toolkit-11-8 libcudnn8 libcudnn8-dev
 
     # Réexporter PATH après installation
     export PATH=/usr/local/cuda-11.8/bin:$PATH
@@ -115,7 +115,7 @@ else
         echo 'export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
     fi
 
-    echo -e "${GREEN}✓ CUDA Toolkit installé${NC}"
+    echo -e "${GREEN}✓ CUDA Toolkit et cuDNN installés${NC}"
 fi
 
 # Vérification CRITIQUE que nvcc est accessible
@@ -246,7 +246,7 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D ENABLE_FAST_MATH=1 \
       -D CUDA_FAST_MATH=1 \
       -D WITH_CUBLAS=ON \
-      -D WITH_CUDNN=ON \    # quand on aura installé cuDNN, c’est ce qu’on voudra
+      -D WITH_CUDNN=ON \
       -D OPENCV_DNN_CUDA=ON \
       -D OPENCV_ENABLE_NONFREE=ON \
       -D WITH_TBB=ON \
