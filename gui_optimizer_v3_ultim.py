@@ -39,6 +39,8 @@ import pytesseract
 import optuna
 from optuna.samplers import TPESampler, QMCSampler, NSGAIISampler
 import os
+import sys
+import platform
 from glob import glob
 import threading
 import tkinter as tk
@@ -51,7 +53,18 @@ import time
 
 # --- CONFIGURATION ---
 INPUT_FOLDER = 'test_scans'
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# Configuration Tesseract multi-plateforme
+if platform.system() == 'Windows':
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+elif platform.system() == 'Linux':
+    # Sous Linux, tesseract est généralement dans le PATH après installation via apt
+    # Si tesseract n'est pas dans le PATH, décommentez et ajustez le chemin ci-dessous:
+    # pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+    pass
+elif platform.system() == 'Darwin':  # macOS
+    # Sur macOS avec Homebrew
+    pytesseract.pytesseract.tesseract_cmd = '/opt/homebrew/bin/tesseract'
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
