@@ -32,13 +32,29 @@ Configuration :
 - ENABLE_DETAILED_TIMING = False (défaut) : Mode production rapide
 - ENABLE_DETAILED_TIMING = True : Mode debug avec analyse temps détaillée
 """
+import os
+import sys
+import multiprocessing
+
+# --- FIX 1 : Forcer X11 pour Tkinter (évite les crashs Wayland sous Ubuntu 22.04) ---
+os.environ["GDK_BACKEND"] = "x11"
+os.environ["tk_library"] = "/usr/lib/x86_64-linux-gnu/tk8.6" # Optionnel, aide parfois
+
+# --- FIX 2 : Paramètres OpenCV ---
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(2**64)
+# Note : QT_QPA... n'est utile que pour PyQt, mais ne gêne pas Tkinter.
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = ""
 
 import cv2
+import numpy as np
+# ... suite de vos imports ...
+import tkinter as tk
+# ...
+
 import numpy as np
 import pytesseract
 import optuna
 from optuna.samplers import TPESampler, QMCSampler, NSGAIISampler
-import os
 import sys
 import platform
 from glob import glob
@@ -1091,29 +1107,27 @@ class OptimizerGUI:
                 self.optimal_labels[gui_name].config(text=f"{value_to_display:.2f}" if isinstance(value_to_display, float) else f"{value_to_display}")
 
 
-
 if __name__ == "__main__":
+    # --- FIX CRITIQUE POUR LINUX + CUDA ---
+    # Empêche le crash (Error 139 / SIGSEGV) lors de l'utilisation de multiprocessing
+    # Force Python à créer des processus propres au lieu de cloner la mémoire
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # La méthode a déjà été définie, on continue.
 
-
-
+    # Nécessaire si vous comptez compiler votre script en exécutable plus tard
     multiprocessing.freeze_support()
 
+    # Création du dossier d'entrée si inexistant
+    if not os.path.exists(INPUT_FOLDER):
+        os.makedirs(INPUT_FOLDER)
 
-
-    if not os.path.exists(INPUT_FOLDER): os.makedirs(INPUT_FOLDER)
-
-
-
+    # Initialisation de l'interface graphique
     root = tk.Tk()
 
-
+    # Configuration optionnelle pour améliorer le rendu sous Linux
+    # root.geometry("1200x800")
 
     app = OptimizerGUI(root)
-
-
-
     root.mainloop()
-
-
-
-

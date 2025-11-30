@@ -16,7 +16,7 @@
 # ===================================================================
 
 # Traitement numérique
-numpy>=1.23.0              # Opérations matricielles
+numpy>=1.23.0,<2              # Opérations matricielles
 
 # OCR Tesseract
 pytesseract>=0.3.10        # Wrapper Python pour Tesseract-OCR
