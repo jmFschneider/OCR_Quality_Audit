@@ -1,149 +1,20 @@
-# Requirements pour OCR Quality Audit sous Ubuntu 20.04
-# Installation : pip3 install -r requirements_ubuntu.txt
+# Requirements pour OCR Quality Audit - Ubuntu 22.04 avec CUDA
+# Installation système : pip3 install --user -r requirements_ubuntu.txt
 
-# ===================================================================
-# IMPORTANT : OpenCV-CUDA
-# ===================================================================
-# OpenCV avec CUDA doit être compilé manuellement (voir build_opencv_cuda.sh)
-# NE PAS installer opencv-python via pip si vous utilisez CUDA !
-# La compilation installe cv2 directement dans site-packages
+# Core dependencies
+numpy==1.26.4
+scipy==1.11.3
+pandas==2.1.1
 
-# Pour vérifier si OpenCV-CUDA est installé :
-#   python3 -c "import cv2; print(cv2.__version__, cv2.cuda.getCudaEnabledDeviceCount())"
+# Image processing & OCR
+pytesseract==0.3.13
+pillow==12.0.0
 
-# ===================================================================
-# CORE DEPENDENCIES
-# ===================================================================
+# Visualization
+matplotlib==3.8.0
 
-# Traitement numérique
-numpy>=1.23.0,<2              # Opérations matricielles
+# Optimization (optionnel)
+optuna==4.6.0
 
-# OCR Tesseract
-pytesseract>=0.3.10        # Wrapper Python pour Tesseract-OCR
-
-# Installation Tesseract sous Ubuntu :
-#   sudo apt install tesseract-ocr tesseract-ocr-fra
-# Puis dans gui_optimizer_v3_ultim.py, configurer :
-#   pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-
-# Optimisation
-optuna>=3.4.0              # Framework d'optimisation Bayésienne
-scipy>=1.10.0              # Algorithmes d'optimisation (L-BFGS-B, Nelder-Mead, Sobol)
-
-# ===================================================================
-# ANALYSIS DEPENDENCIES
-# ===================================================================
-
-pandas>=1.5.0              # Manipulation de données tabulaires
-matplotlib>=3.6.0          # Visualisations
-seaborn>=0.12.0            # Visualisations statistiques avancées
-
-# ===================================================================
-# PHASE 3B - Tesseract Batch Processing
-# ===================================================================
-
-tifffile>=2023.7.0         # Création TIFF multi-page pour batch Tesseract
-                           # Gain estimé: +30-40% sur temps OCR
-
-# ===================================================================
-# UBUNTU SYSTEM PACKAGES (via apt)
-# ===================================================================
-
-# Ces packages doivent être installés via apt (pas pip) :
-#
-# sudo apt update
-# sudo apt install -y \
-#     python3-tk \
-#     tesseract-ocr tesseract-ocr-fra \
-#     libgl1-mesa-glx \
-#     libglib2.0-0
-
-# ===================================================================
-# VERSIONS TESTÉES (Ubuntu 20.04)
-# ===================================================================
-# Python: 3.8+ (natif Ubuntu 20.04)
-# OpenCV: 4.8.0 (compilé avec CUDA 11.8)
-# CUDA: 11.8
-# numpy: 1.24.3
-# pytesseract: 0.3.10
-# optuna: 3.4.0
-# scipy: 1.11.3
-# pandas: 2.1.1
-# matplotlib: 3.8.0
-# seaborn: 0.13.0
-
-# ===================================================================
-# NOTES D'INSTALLATION
-# ===================================================================
-
-# 1. Installation des dépendances système :
-#    sudo apt update
-#    sudo apt install -y python3-pip python3-venv python3-tk
-#    sudo apt install -y tesseract-ocr tesseract-ocr-fra
-#    sudo apt install -y libgl1-mesa-glx libglib2.0-0
-
-# 2. Créer environnement virtuel :
-#    python3 -m venv .venv
-#    source .venv/bin/activate
-
-# 3. Installer dépendances Python :
-#    pip3 install -r requirements_ubuntu.txt
-
-# 4. Compiler OpenCV avec CUDA (PHASE 3) :
-#    chmod +x build_opencv_cuda.sh
-#    ./build_opencv_cuda.sh
-#    # Durée : ~45-60 min sur 12 cores
-
-# 5. Vérifier installation :
-#    python3 test_cuda.py
-
-# 6. Configurer le chemin Tesseract dans gui_optimizer_v3_ultim.py :
-#    # Ligne ~45 (Windows) :
-#    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-#
-#    # Remplacer par (Ubuntu) :
-#    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-
-# ===================================================================
-# DIFFÉRENCES UBUNTU vs WINDOWS
-# ===================================================================
-
-# 1. opencv-python :
-#    - Windows : pip install opencv-python (inclut OpenCL)
-#    - Ubuntu  : Compilation manuelle avec CUDA (bien plus rapide)
-
-# 2. Tesseract :
-#    - Windows : Installation .exe + configuration PATH
-#    - Ubuntu  : apt install tesseract-ocr (plus simple)
-
-# 3. Tkinter :
-#    - Windows : Inclus dans Python
-#    - Ubuntu  : apt install python3-tk
-
-# 4. Performance :
-#    - Linux a généralement moins d'overhead système
-#    - CUDA fonctionne mieux sous Linux (natif NVIDIA)
-#    - Compilation plus rapide sous Ubuntu (GCC vs Visual Studio)
-
-# ===================================================================
-# DÉPANNAGE
-# ===================================================================
-
-# Problème : ImportError: libGL.so.1
-# Solution :
-#   sudo apt install libgl1-mesa-glx
-
-# Problème : cv2 non trouvé après compilation
-# Solution :
-#   python3 -c "import sys; print(sys.path)"
-#   # Vérifier que /usr/local/lib/python3.8/site-packages est listé
-
-# Problème : CUDA non détecté
-# Solution :
-#   python3 -c "import cv2; print(cv2.getBuildInformation())"
-#   # Vérifier section "NVIDIA CUDA"
-
-# Problème : Tesseract non trouvé
-# Solution :
-#   which tesseract  # Doit afficher /usr/bin/tesseract
-#   tesseract --version  # Vérifier installation
+# Note: OpenCV 4.8.0 avec CUDA 11.8 doit être compilé manuellement
+# Voir: Phase3_Migration_Ubuntu_CUDA/compile_opencv_numpy126.sh

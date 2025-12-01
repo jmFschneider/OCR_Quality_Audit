@@ -44,7 +44,9 @@ if platform.system() == 'Linux':
     # os.environ["tk_library"] = "/usr/lib/x86_64-linux-gnu/tk8.6"
 
 # --- FIX 2 : Paramètres OpenCV ---
-os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(2**64)
+# Note: 2**64 cause une erreur "stoull" sur Ubuntu avec OpenCV compilé avec CUDA
+# Utilisation de 10**10 (10 milliards de pixels) qui est largement suffisant
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(10**10)
 
 # --- FIX 3 : Désactiver variables problématiques pour OpenCV ---
 # Ne pas définir QT_QPA_PLATFORM_PLUGIN_PATH avec une chaîne vide
