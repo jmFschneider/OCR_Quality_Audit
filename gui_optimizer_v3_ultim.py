@@ -2,21 +2,22 @@
 OCR Quality Audit - Optimiseur de Pipeline d'Image
 ====================================================
 
-PHASE 2 - Optimisations GPU (UMat/OpenCL) + Performance
---------------------------------------------------------
+PHASE 3 - Optimisations CUDA (NVIDIA GTX 1080 Ti) + Performance
+----------------------------------------------------------------
 
 Optimisations implémentées :
-1. Migration UMat/OpenCL pour accélération GPU des opérations OpenCV
-   - Chargement des images directement en UMat (mémoire GPU)
-   - Pipeline complet exécuté sur GPU quand possible
-   - Conversion CPU↔GPU minimisée (uniquement pour Tesseract)
+1. Pipeline 100% CUDA natif pour accélération GPU NVIDIA
+   - Chargement des images directement en GpuMat (VRAM GPU)
+   - Pipeline complet exécuté sur GPU jusqu'à la binarisation
+   - Conversion CPU↔GPU minimisée (uniquement pour Tesseract et denoising)
 
-2. Opérations GPU-accelerated :
-   - GaussianBlur (normalisation)
-   - morphologyEx (suppression de lignes)
-   - threshold (binarisation OTSU et adaptative)
-   - Laplacian (estimation du bruit et calcul de netteté)
-   - divide (normalisation par division)
+2. Opérations CUDA natives :
+   - cv2.cuda.createGaussianFilter (normalisation)
+   - cv2.cuda.createMorphologyFilter (suppression de lignes)
+   - cv2.cuda.threshold (binarisation OTSU)
+   - cv2.cuda.createLaplacianFilter (estimation du bruit et calcul de netteté)
+   - cv2.cuda.divide (normalisation par division)
+   - cv2.cuda.meanStdDev (métriques instantanées sans transfert CPU)
 
 3. Pre-resize Tesseract pour images > 2500px (réduit charge OCR)
 
@@ -25,8 +26,8 @@ Optimisations implémentées :
    - Flag ENABLE_DETAILED_TIMING : Désactiver mesures temps détaillées (défaut: False)
    - Logs console réduits : Tous les 50 points au lieu de chaque point
 
-Gain estimé total : +35-50% sur les temps d'exécution (Phase 2 + optimisations)
-Compatible : CPU (fallback automatique) et GPU (RTX 1080, etc.)
+Gain estimé total : x2 à x5 sur les temps d'exécution (Phase 3 + CUDA)
+Compatible : CPU (fallback automatique) et GPU CUDA (GTX 1080 Ti, RTX, etc.)
 
 Configuration :
 - ENABLE_DETAILED_TIMING = False (défaut) : Mode production rapide
@@ -102,59 +103,93 @@ _HAS_PRINTED_TIMINGS_KEY = 'OCR_TIMINGS_PRINTED'
 # Activer les optimisations OpenCV
 cv2.setUseOptimized(True)
 
-# Tenter d'activer OpenCL pour l'accélération GPU si disponible
-USE_GPU = False
-if cv2.ocl.haveOpenCL():
-    cv2.ocl.setUseOpenCL(True)
-    USE_GPU = True
+# --- DÉTECTION CUDA (Support Natif NVIDIA) ---
+USE_CUDA = False
+try:
+    count = cv2.cuda.getCudaEnabledDeviceCount()
+    if count > 0:
+        cv2.cuda.setDevice(0)
+        USE_CUDA = True
+        if _SHOULD_PRINT_GPU_INFO:
+            print("\n" + "="*70)
+            print("🚀 PHASE 3 - ACCÉLÉRATION CUDA ACTIVÉE (GTX 1080 Ti)")
+            print("="*70)
+            print(f"✅ {count} GPU CUDA détecté(s)")
+            print("📊 Opérations CUDA natives activées:")
+            print("   • cv2.cuda.GaussianFilter (normalisation)")
+            print("   • cv2.cuda.createMorphologyFilter (suppression lignes)")
+            print("   • cv2.cuda.threshold (binarisation)")
+            print("   • cv2.cuda.createLaplacianFilter (estimation bruit, netteté)")
+            print("   • cv2.cuda.divide (normalisation)")
+            print("   • cv2.cuda.meanStdDev (métriques instantanées)")
+            print("🎯 Gain estimé: x2 à x5 sur le traitement d'image")
+            print("="*70 + "\n")
+    else:
+        if _SHOULD_PRINT_GPU_INFO:
+            print("⚠️  Module CUDA présent mais aucun GPU détecté - Mode CPU")
+except AttributeError:
+    # OpenCV compilé sans support CUDA
     if _SHOULD_PRINT_GPU_INFO:
-        print("\n" + "="*70)
-        print("🚀 PHASE 2 - OPTIMISATIONS GPU ACTIVÉES")
-        print("="*70)
-        print("✅ OpenCL activé pour OpenCV (accélération GPU UMat)")
-        print("📊 Opérations GPU-accelerated:")
-        print("   • GaussianBlur (normalisation)")
-        print("   • morphologyEx (suppression lignes)")
-        print("   • threshold (binarisation)")
-        print("   • Laplacian (estimation bruit, netteté)")
-        print("   • divide (normalisation)")
-        print("🎯 Gain estimé: +10-15% sur les opérations OpenCV")
-        print("="*70 + "\n")
-else:
-    if _SHOULD_PRINT_GPU_INFO:
-        print("⚠️  OpenCL non disponible - Mode CPU uniquement")
+        print("⚠️  OpenCV compilé SANS support CUDA - Mode CPU uniquement")
+    USE_CUDA = False
 
 # --- CORE FUNCTIONS (GPU-Optimized) ---
 
+def ensure_gpu(image):
+    """Charge une image sur le GPU (GpuMat) si elle n'y est pas déjà."""
+    if USE_CUDA:
+        if isinstance(image, cv2.cuda_GpuMat):
+            return image
+        gpu_mat = cv2.cuda_GpuMat()
+        gpu_mat.upload(image)
+        return gpu_mat
+    return image
+
+def ensure_cpu(image):
+    """Récupère une image du GPU vers le CPU si nécessaire."""
+    if USE_CUDA and isinstance(image, cv2.cuda_GpuMat):
+        return image.download()
+    return image
+
 def get_sharpness(image):
-    """Calcule la netteté. Accepte numpy array ou UMat."""
-    gray = image # Image is already grayscale
-    if USE_GPU and not isinstance(image, cv2.UMat):
-        gray = cv2.UMat(image)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    if isinstance(laplacian, cv2.UMat):
-        laplacian = laplacian.get()
-    return laplacian.var()
+    """Calcule la netteté. Accepte numpy array ou GpuMat (CUDA)."""
+    if USE_CUDA:
+        gpu_img = ensure_gpu(image)
+        # Créer le filtre Laplacien CUDA
+        laplacian_filter = cv2.cuda.createLaplacianFilter(gpu_img.type(), cv2.CV_64F, ksize=1)
+        gpu_lap = laplacian_filter.apply(gpu_img)
+        # Calcul rapide de la variance via meanStdDev (reste sur GPU)
+        mean, std_dev = cv2.cuda.meanStdDev(gpu_lap)
+        return std_dev[0][0] ** 2
+    else:
+        # Fallback CPU
+        gray = image
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        return laplacian.var()
 
 def get_contrast(image):
-    """Calcule le contraste. Accepte numpy array ou UMat."""
-    gray = image # Image is already grayscale
-    if isinstance(gray, cv2.UMat):
-        gray = gray.get()
-    return gray.std()
+    """Calcule le contraste. Accepte numpy array ou GpuMat (CUDA)."""
+    if USE_CUDA:
+        gpu_img = ensure_gpu(image)
+        # Calcul direct sur GPU sans transfert CPU
+        mean, std_dev = cv2.cuda.meanStdDev(gpu_img)
+        return std_dev[0][0]
+    else:
+        # Fallback CPU
+        gray = image
+        return gray.std()
 
 def get_tesseract_score(image):
-    """OCR Tesseract avec pre-resize si nécessaire. Accepte numpy array ou UMat."""
+    """OCR Tesseract avec pre-resize si nécessaire. Accepte numpy array ou GpuMat (CUDA)."""
     try:
-        # Tesseract nécessite numpy array, pas UMat
-        if isinstance(image, cv2.UMat):
-            image = image.get()
+        # Tesseract nécessite numpy array (CPU)
+        img_cpu = ensure_cpu(image)
 
         # Pre-resize pour optimiser les grandes images (réduit la charge Tesseract)
-        if image.shape[1] > 2500:
-            image = cv2.resize(image, None, fx=0.5, fy=0.5)
+        if img_cpu.shape[1] > 2500:
+            img_cpu = cv2.resize(img_cpu, None, fx=0.5, fy=0.5)
 
-        data = pytesseract.image_to_data(image, config='--oem 1 --psm 6', output_type=pytesseract.Output.DICT)
+        data = pytesseract.image_to_data(img_cpu, config='--oem 1 --psm 6', output_type=pytesseract.Output.DICT)
         confs = [int(x) for x in data['conf'] if int(x) != -1]
         return sum(confs) / len(confs) if confs else 0
     except: return 0
@@ -163,66 +198,94 @@ def evaluer_toutes_metriques(image):
     return get_tesseract_score(image), get_sharpness(image), get_contrast(image)
 
 def remove_lines_param(gray_image, h_size, v_size, dilate_iter):
-    """Suppression des lignes - Version GPU-optimized."""
-    # Convertir en UMat si GPU activé et pas déjà UMat
-    if USE_GPU and not isinstance(gray_image, cv2.UMat):
-        gray_image = cv2.UMat(gray_image)
+    """Suppression des lignes - Version CUDA-optimized."""
+    if USE_CUDA:
+        # Pipeline 100% GPU
+        gpu_src = ensure_gpu(gray_image)
 
-    thresh = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
-    h_detect = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, h_kernel, iterations=2)
-    v_detect = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel, iterations=2)
-    mask = cv2.addWeighted(h_detect, 1, v_detect, 1, 0.0)
-    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=dilate_iter)
+        # Binarisation OTSU sur GPU
+        _, gpu_thresh = cv2.cuda.threshold(gpu_src, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # Copie et masquage
-    # UMat n'a pas de méthode .copy(), utiliser clone() ou getMat()
-    if isinstance(gray_image, cv2.UMat):
-        result_np = gray_image.get().copy()
-        mask_np = mask.get() if isinstance(mask, cv2.UMat) else mask
-        result_np[mask_np > 0] = 255
-        # Reconvertir en UMat si GPU activé
-        result = cv2.UMat(result_np) if USE_GPU else result_np
+        # Kernels structurants
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
+
+        # Morphologie sur GPU avec filtres natifs
+        morph_h = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, gpu_thresh.type(), h_kernel, iterations=2)
+        morph_v = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, gpu_thresh.type(), v_kernel, iterations=2)
+
+        h_detect = morph_h.apply(gpu_thresh)
+        v_detect = morph_v.apply(gpu_thresh)
+
+        # Combinaison des masques sur GPU
+        gpu_mask = cv2.cuda.addWeighted(h_detect, 1.0, v_detect, 1.0, 0.0)
+
+        # Dilatation finale
+        d_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        morph_dilate = cv2.cuda.createMorphologyFilter(cv2.MORPH_DILATE, gpu_mask.type(), d_kernel, iterations=dilate_iter)
+        gpu_mask = morph_dilate.apply(gpu_mask)
+
+        # Remplacer les lignes détectées par du blanc (max entre image et masque)
+        gpu_result = cv2.cuda.max(gpu_src, gpu_mask)
+        return gpu_result
     else:
-        # Opération CPU standard
-        result = gray_image.copy()
-        mask_np = mask.get() if isinstance(mask, cv2.UMat) else mask
-        result[mask_np > 0] = 255
+        # Fallback CPU
+        thresh = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
+        h_detect = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, h_kernel, iterations=2)
+        v_detect = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel, iterations=2)
+        mask = cv2.addWeighted(h_detect, 1, v_detect, 1, 0.0)
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=dilate_iter)
 
-    return result
+        result = gray_image.copy()
+        result[mask > 0] = 255
+        return result
 
 def normalisation_division(image_gray, kernel_size):
-    """Normalisation par division - Version GPU-optimized."""
+    """Normalisation par division - Version CUDA-optimized."""
     if kernel_size % 2 == 0: kernel_size += 1
 
-    # Convertir en UMat si GPU activé et pas déjà UMat
-    if USE_GPU and not isinstance(image_gray, cv2.UMat):
-        image_gray = cv2.UMat(image_gray)
+    if USE_CUDA:
+        # Pipeline 100% GPU
+        gpu_src = ensure_gpu(image_gray)
 
-    # GaussianBlur et divide bénéficient de l'accélération GPU
-    fond = cv2.GaussianBlur(image_gray, (kernel_size, kernel_size), 0)
-    return cv2.divide(image_gray, fond, scale=255)
+        # Conversion en float32 pour calculs précis
+        gpu_float = gpu_src.convertTo(cv2.CV_32F)
+
+        # Filtre Gaussien CUDA natif
+        gaussian_filter = cv2.cuda.createGaussianFilter(cv2.CV_32F, cv2.CV_32F,
+                                                         (kernel_size, kernel_size), 0)
+        gpu_blur = gaussian_filter.apply(gpu_float)
+
+        # Division sur GPU
+        gpu_result = cv2.cuda.divide(gpu_float, gpu_blur, scale=255.0)
+
+        # Reconversion en uint8
+        return gpu_result.convertTo(cv2.CV_8U)
+    else:
+        # Fallback CPU
+        fond = cv2.GaussianBlur(image_gray, (kernel_size, kernel_size), 0)
+        return cv2.divide(image_gray, fond, scale=255)
 
 def estimate_noise_level(image):
     """
     Estime le niveau de bruit dans une image en utilisant la variance locale.
     Retourne un score de bruit (plus élevé = plus de bruit).
-    Version GPU-optimized.
+    Version CUDA-optimized.
     """
-    # Convertir en UMat si GPU activé et pas déjà UMat
-    if USE_GPU and not isinstance(image, cv2.UMat):
-        image = cv2.UMat(image)
-
-    # Calcul de la variance locale avec un filtre Laplacien (GPU-accelerated)
-    laplacian = cv2.Laplacian(image, cv2.CV_64F)
-
-    # Récupérer en numpy pour le calcul de variance
-    if isinstance(laplacian, cv2.UMat):
-        laplacian = laplacian.get()
-
-    noise_estimate = laplacian.var()
-    return noise_estimate
+    if USE_CUDA:
+        gpu_img = ensure_gpu(image)
+        # Filtre Laplacien CUDA
+        laplacian_filter = cv2.cuda.createLaplacianFilter(gpu_img.type(), cv2.CV_64F, ksize=3)
+        gpu_lap = laplacian_filter.apply(gpu_img)
+        # Calcul direct sur GPU
+        mean, std_dev = cv2.cuda.meanStdDev(gpu_lap)
+        return std_dev[0][0] ** 2
+    else:
+        # Fallback CPU
+        laplacian = cv2.Laplacian(image, cv2.CV_64F)
+        return laplacian.var()
 
 def adaptive_denoising(image, base_h_param, noise_threshold=100):
     """
@@ -232,95 +295,103 @@ def adaptive_denoising(image, base_h_param, noise_threshold=100):
     - Si bruit >= threshold : searchWindowSize=21 (qualité maximale)
 
     Le paramètre noise_threshold est optimisable pour s'adapter à vos images.
-    Version GPU-optimized (UMat).
+    Version CUDA-optimized : Estimation du bruit sur GPU, denoising sur CPU.
     """
     if base_h_param <= 0:
         return image
 
-    # Assurer que l'image est en numpy pour fastNlMeansDenoising
-    # (cette fonction ne supporte pas bien UMat dans toutes les versions OpenCV)
-    input_was_umat = isinstance(image, cv2.UMat)
-    if input_was_umat:
-        image = image.get()
-
+    # Estimer le bruit (peut utiliser GPU si disponible)
     noise_level = estimate_noise_level(image)
+
+    # Denoising sur CPU (fastNlMeansDenoising n'a pas d'équivalent CUDA performant)
+    img_cpu = ensure_cpu(image)
 
     # Stratégie adaptative à 2 niveaux
     if noise_level < noise_threshold:
         # Bruit faible/moyen : paramètres optimisés (gain de vitesse)
-        result = cv2.fastNlMeansDenoising(image, None, h=base_h_param,
+        result = cv2.fastNlMeansDenoising(img_cpu, None, h=base_h_param,
                                          templateWindowSize=7, searchWindowSize=15)
     else:
         # Bruit élevé : paramètres complets (qualité maximale)
-        result = cv2.fastNlMeansDenoising(image, None, h=base_h_param,
+        result = cv2.fastNlMeansDenoising(img_cpu, None, h=base_h_param,
                                          templateWindowSize=7, searchWindowSize=21)
 
-    # Reconvertir en UMat si nécessaire
-    if USE_GPU and input_was_umat:
-        result = cv2.UMat(result)
+    # Reconvertir en GpuMat si CUDA activé pour la suite du pipeline
+    if USE_CUDA:
+        return ensure_gpu(result)
 
     return result
 
 def pipeline_complet(image, params):
-    """Pipeline complet de traitement d'image - Version GPU-optimized."""
-    # Convertir en UMat dès le début si GPU activé
-    if USE_GPU and not isinstance(image, cv2.UMat):
-        gray = cv2.UMat(image)
-    else:
-        gray = image # Image is already grayscale
+    """Pipeline complet de traitement d'image - Version CUDA-optimized.
 
-    # Toutes ces fonctions sont maintenant GPU-aware
-    no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
-    norm = normalisation_division(no_lines, params['norm_kernel'])
-    denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
+    Pipeline 100% GPU jusqu'à la binarisation adaptative (qui nécessite CPU).
+    """
+    # 1. Chargement GPU (si CUDA activé)
+    current_img = ensure_gpu(image) if USE_CUDA else image
 
-    # adaptiveThreshold sur UMat (GPU-accelerated)
-    result = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+    # 2. Suppression de lignes (100% GPU si CUDA)
+    current_img = remove_lines_param(current_img, params['line_h_size'],
+                                     params['line_v_size'], params['dilate_iter'])
+
+    # 3. Normalisation par division (100% GPU si CUDA)
+    current_img = normalisation_division(current_img, params['norm_kernel'])
+
+    # 4. Denoising adaptatif (estimation bruit GPU, denoising CPU, retour GPU si CUDA)
+    current_img = adaptive_denoising(current_img, params['denoise_h'],
+                                     params.get('noise_threshold', 100))
+
+    # 5. Binarisation adaptative (nécessite CPU car algorithme adaptatif complexe)
+    img_cpu = ensure_cpu(current_img)
+    result = cv2.adaptiveThreshold(img_cpu, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                     cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
 
     return result
 
 
 def pipeline_complet_timed(image, params):
-    """Pipeline complet avec mesure des temps - Version GPU-optimized."""
+    """Pipeline complet avec mesure des temps - Version CUDA-optimized."""
     timings = {}
 
-    # Convertir en UMat dès le début si GPU activé
-    if USE_GPU and not isinstance(image, cv2.UMat):
-        gray = cv2.UMat(image)
-    else:
-        gray = image # Image is already grayscale
+    # 1. Chargement GPU
+    current_img = ensure_gpu(image) if USE_CUDA else image
 
     if ENABLE_DETAILED_TIMING:
         # Step 1: Line Removal
         t0 = time.time()
-        no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
+        current_img = remove_lines_param(current_img, params['line_h_size'],
+                                         params['line_v_size'], params['dilate_iter'])
         timings['1_line_removal'] = (time.time() - t0) * 1000
 
         # Step 2: Normalization
         t0 = time.time()
-        norm = normalisation_division(no_lines, params['norm_kernel'])
+        current_img = normalisation_division(current_img, params['norm_kernel'])
         timings['2_normalization'] = (time.time() - t0) * 1000
 
         # Step 3: Denoising (Adaptive)
         t0 = time.time()
-        noise_level = estimate_noise_level(norm)
-        denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
+        noise_level = estimate_noise_level(current_img)
+        current_img = adaptive_denoising(current_img, params['denoise_h'],
+                                         params.get('noise_threshold', 100))
         timings['3_denoising'] = (time.time() - t0) * 1000
-        timings['noise_level'] = noise_level  # Pour diagnostic
-        timings['noise_threshold'] = params.get('noise_threshold', 100)  # Pour voir le seuil utilisé
+        timings['noise_level'] = noise_level
+        timings['noise_threshold'] = params.get('noise_threshold', 100)
 
         # Step 4: Binarization
         t0 = time.time()
-        processed_img = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        img_cpu = ensure_cpu(current_img)
+        processed_img = cv2.adaptiveThreshold(img_cpu, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                                cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
         timings['4_binarization'] = (time.time() - t0) * 1000
     else:
         # Exécution rapide sans mesures de temps
-        no_lines = remove_lines_param(gray, params['line_h_size'], params['line_v_size'], params['dilate_iter'])
-        norm = normalisation_division(no_lines, params['norm_kernel'])
-        denoised = adaptive_denoising(norm, params['denoise_h'], params.get('noise_threshold', 100))
-        processed_img = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        current_img = remove_lines_param(current_img, params['line_h_size'],
+                                         params['line_v_size'], params['dilate_iter'])
+        current_img = normalisation_division(current_img, params['norm_kernel'])
+        current_img = adaptive_denoising(current_img, params['denoise_h'],
+                                         params.get('noise_threshold', 100))
+        img_cpu = ensure_cpu(current_img)
+        processed_img = cv2.adaptiveThreshold(img_cpu, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                                cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
 
     return processed_img, timings
@@ -634,7 +705,7 @@ def run_optuna_optimization(gui_app, n_trials, param_ranges, fixed_params, algo_
 class OptimizerGUI:
     def __init__(self, master):
         self.master = master
-        master.title("🔍 Optimiseur OCR V7 - Parallélisé")
+        master.title("🔍 Optimiseur OCR V7 - CUDA Accelerated")
         master.geometry("1000x800")
 
         self.best_score_so_far = 0.0
