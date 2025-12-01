@@ -13,7 +13,7 @@ PYTHON3_INCLUDE_DIR=$(python3 -c "from distutils.sysconfig import get_python_inc
 PYTHON3_PACKAGES_PATH=$(python3 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
 
 echo "=========================================================================="
-echo "  Compilation OpenCV 4.8.0 avec CUDA 11.8 et NumPy 1.26.4"
+echo "  Compilation OpenCV 4.8.0 avec CUDA 11.8 et NumPy 1.21.5"
 echo "=========================================================================="
 echo ""
 echo "Configuration Python:"
@@ -26,8 +26,8 @@ echo ""
 # Vérifier NumPy version
 NUMPY_VERSION=$(python3 -c "import numpy; print(numpy.__version__)")
 echo "NumPy version: $NUMPY_VERSION"
-if [ "$NUMPY_VERSION" != "1.26.4" ]; then
-    echo "ERREUR: NumPy doit être 1.26.4, trouvé: $NUMPY_VERSION"
+if [ "$NUMPY_VERSION" != "1.21.5" ]; then
+    echo "ERREUR: NumPy doit être 1.21.5, trouvé: $NUMPY_VERSION"
     exit 1
 fi
 echo ""

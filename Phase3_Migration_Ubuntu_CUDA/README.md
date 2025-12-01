@@ -1,12 +1,28 @@
 # Phase 3 : Migration Ubuntu + Accélération CUDA
 
 **Objectif** : Migrer le projet de Windows (OpenCL) vers Ubuntu (CUDA) pour accélérer le traitement d'images 300 DPI
-**Gain attendu** : **×2.2** (Screening 77 min → 35 min)
-**Plateforme cible** : Ubuntu 20.04 LTS + NVIDIA GTX 1080 + CUDA 11.8
+**Statut** : ✅ **MIGRATION RÉUSSIE** (Décembre 2024)
+**Plateforme** : Ubuntu 22.04 LTS + NVIDIA GTX 1080 Ti + CUDA 11.8
 
 ---
 
-## 📚 Documentation Disponible
+## 🎯 Guide Principal
+
+### 📘 [GUIDE_INSTALLATION_UBUNTU_FINAL.md](./GUIDE_INSTALLATION_UBUNTU_FINAL.md)
+**⭐ DOCUMENT DE RÉFÉRENCE - PROCÉDURE TESTÉE ET VALIDÉE**
+
+Guide complet de la migration Windows → Ubuntu avec :
+- ✅ Installation complète pas à pas (celle qui fonctionne vraiment)
+- ✅ Architecture finale stable (packages système + OpenCV compilé)
+- ✅ Tous les problèmes rencontrés et leurs solutions
+- ✅ Scripts de vérification et de test
+- ✅ Résumé des commandes pour installation rapide
+
+**👉 Commencez par ce guide pour une installation garantie sans segfault**
+
+---
+
+## 📚 Documentation Complémentaire
 
 ### 🎯 [SYNTHESE_PROJET.md](./SYNTHESE_PROJET.md)
 **Vue d'ensemble complète du projet**
