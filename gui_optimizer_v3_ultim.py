@@ -761,7 +761,7 @@ class OptimizerGUI:
         btn_frame.grid(row=0, column=4, sticky="e", padx=5)
         
         self.debug_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(btn_frame, text="Debug/Timing", variable=self.debug_mode_var).pack(side="left", padx=5)
+        tk.Checkbutton(btn_frame, text="Debug/Timing", variable=self.debug_mode_var).pack(side="left", padx=5)
         
         self.btn_start = ttk.Button(btn_frame, text="▶ LANCER", command=self.start_optimization)
         self.btn_start.pack(side="left")
@@ -1109,26 +1109,38 @@ class OptimizerGUI:
 
 
 if __name__ == "__main__":
+    print("[DEBUG] Démarrage de l'application...")
+
     # --- FIX CRITIQUE POUR LINUX + CUDA ---
     # Empêche le crash (Error 139 / SIGSEGV) lors de l'utilisation de multiprocessing
     # Force Python à créer des processus propres au lieu de cloner la mémoire
+    print("[DEBUG] Configuration multiprocessing...")
     try:
         multiprocessing.set_start_method('spawn', force=True)
-    except RuntimeError:
+        print("[DEBUG] multiprocessing.set_start_method('spawn') OK")
+    except RuntimeError as e:
+        print(f"[DEBUG] multiprocessing déjà configuré: {e}")
         pass  # La méthode a déjà été définie, on continue.
 
     # Nécessaire si vous comptez compiler votre script en exécutable plus tard
+    print("[DEBUG] multiprocessing.freeze_support()...")
     multiprocessing.freeze_support()
 
     # Création du dossier d'entrée si inexistant
+    print(f"[DEBUG] Vérification dossier {INPUT_FOLDER}...")
     if not os.path.exists(INPUT_FOLDER):
         os.makedirs(INPUT_FOLDER)
 
     # Initialisation de l'interface graphique
+    print("[DEBUG] Création fenêtre Tkinter...")
     root = tk.Tk()
+    print("[DEBUG] Fenêtre Tkinter créée")
 
     # Configuration optionnelle pour améliorer le rendu sous Linux
     # root.geometry("1200x800")
 
+    print("[DEBUG] Initialisation OptimizerGUI...")
     app = OptimizerGUI(root)
+    print("[DEBUG] OptimizerGUI initialisé, lancement mainloop...")
     root.mainloop()
+    print("[DEBUG] Fin de l'application")
