@@ -7,6 +7,9 @@ import cv2
 import numpy as np
 import pytesseract
 
+import pytesseract
+
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 # ============================================================
 # DÉTECTION CUDA
 # ============================================================
@@ -285,11 +288,7 @@ def get_tesseract_score(image):
         if cpu_img.shape[1] > 2500:
             cpu_img = cv2.resize(cpu_img, None, fx=0.5, fy=0.5)
 
-        data = pytesseract.image_to_data(
-            cpu_img,
-            config='--oem 1 --psm 6',
-            output_type=pytesseract.Output.DICT
-        )
+        data = pytesseract.image_to_data(cpu_img, config='--oem 1 --psm 6', output_type=pytesseract.Output.DICT)
 
         confs = []
         for c in data.get('conf', []):
