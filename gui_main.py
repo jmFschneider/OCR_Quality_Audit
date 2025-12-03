@@ -125,6 +125,13 @@ class OptimizerGUI:
 
         ttk.Button(opt_frame, text="⏹️ Arrêter",
                   command=self.cancel_optimization).grid(row=0, column=4, padx=5)
+        
+        # Sélecteur de moteur OCR
+        ttk.Label(opt_frame, text="Moteur OCR:").grid(row=1, column=0, padx=5, pady=5)
+        self.ocr_engine_var = tk.StringVar(value="Tesseract")
+        self.ocr_combo = ttk.Combobox(opt_frame, textvariable=self.ocr_engine_var, state="readonly", width=10, values=["Tesseract", "RapidOCR"])
+        self.ocr_combo.grid(row=1, column=1, padx=2, pady=5, columnspan=2, sticky=tk.W)
+        self.ocr_combo.bind("<<ComboboxSelected>>", self.on_ocr_engine_select)
 
         # Logs
         log_frame = ttk.LabelFrame(main_frame, text="📋 Logs", padding="5")
@@ -144,6 +151,27 @@ class OptimizerGUI:
         main_frame.rowconfigure(4, weight=1)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
+        
+        # Initialiser l'état du moteur OCR
+        self.on_ocr_engine_select(None)
+
+    def on_ocr_engine_select(self, event):
+        """Met à jour le moteur OCR sélectionné et l'enregistre dans l'environnement pour les workers."""
+        selection = self.ocr_engine_var.get()
+        
+        if selection == "RapidOCR":
+            if not pipeline.RAPIDOCR_AVAILABLE:
+                messagebox.showwarning("RapidOCR Manquant", "La bibliothèque 'rapidocr-onnxruntime' n'est pas installée.\nRetour à Tesseract.")
+                self.ocr_engine_var.set("Tesseract")
+                os.environ['OCR_USE_RAPIDOCR'] = '0'
+            else:
+                os.environ['OCR_USE_RAPIDOCR'] = '1'
+        else: # Tesseract
+            os.environ['OCR_USE_RAPIDOCR'] = '0'
+        
+        # Mettre à jour la variable globale dans le module pipeline
+        pipeline.USE_RAPID_OCR = (os.environ['OCR_USE_RAPIDOCR'] == '1')
+        self.log(f"Moteur OCR défini sur: {selection}")
 
     def log(self, message):
         """Ajoute un message au log."""
@@ -255,7 +283,10 @@ class OptimizerGUI:
 
         # Callback pour mise à jour de la GUI
         def sobol_callback(point_idx, scores_dict, params_dict):
-            msg = (f"[Point {point_idx+1}] Delta: {scores_dict['tesseract_delta']:.2f}% | "
+            # Déterminer le moteur OCR actif pour le log
+            ocr_engine_name = "RapidOCR" if pipeline.USE_RAPID_OCR else "Tesseract"
+            
+            msg = (f"[OCR: {ocr_engine_name}] [Point {point_idx+1}] Delta: {scores_dict['tesseract_delta']:.2f}% | "
                    f"Tess: {scores_dict['tesseract']:.2f}% | "
                    f"Netteté: {scores_dict['nettete']:.1f} | "
                    f"Contraste: {scores_dict['contraste']:.1f}")
@@ -304,14 +335,17 @@ class OptimizerGUI:
 def main():
     """Point d'entrée principal."""
     print("[DEBUG] Démarrage de l'application...")
-    
-    # Configuration multiprocessing
-    if platform.system() != 'Windows':
-        try:
-            multiprocessing.set_start_method('spawn')
-            print("[DEBUG] multiprocessing.set_start_method('spawn') OK")
-        except RuntimeError:
-            pass
+
+    # Initialiser CUDA avant multiprocessing
+    print("[DEBUG] Initialisation CUDA...")
+    pipeline._init_cuda()
+
+    # Configuration multiprocessing (CRITIQUE pour Windows)
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+        print("[DEBUG] multiprocessing.set_start_method('spawn') OK")
+    except RuntimeError as e:
+        print(f"[DEBUG] multiprocessing déjà configuré: {e}")
 
     multiprocessing.freeze_support()
 

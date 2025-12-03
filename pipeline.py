@@ -1,30 +1,55 @@
-"""
-pipeline.py - Traitement d'images avec support CUDA
-Basé sur sobol_test_pipeline.py (version stable qui fonctionne)
-"""
-
 import cv2
 import numpy as np
 import pytesseract
+import os # Added for environment variable access
 
-import pytesseract
+# RapidOCR Imports
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    RAPIDOCR_AVAILABLE = True
+except ImportError:
+    RAPIDOCR_AVAILABLE = False
+    print("⚠️ RapidOCR non installé. Installez 'rapidocr-onnxruntime' pour l'utiliser.")
 
+# Configuration Tesseract (keep it here as pipeline.py is the OCR hub)
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# Global switch for OCR engine (read from environment variable for multiprocessing)
+USE_RAPID_OCR = os.environ.get('OCR_USE_RAPIDOCR', '0') == '1'
+
+
 # ============================================================
 # DÉTECTION CUDA
 # ============================================================
 
 USE_CUDA = False
-try:
-    USE_CUDA = cv2.cuda.getCudaEnabledDeviceCount() > 0
-except AttributeError:
-    USE_CUDA = False  # OpenCV sans support CUDA compilé
+_cuda_initialized = False
 
-if USE_CUDA:
-    cv2.cuda.setDevice(0)
-    print(f"✅ GPU CUDA activé ({cv2.cuda.getCudaEnabledDeviceCount()} device(s))")
-else:
-    print("⚠️  Mode CPU uniquement")
+def _init_cuda():
+    """Initialise CUDA de manière lazy (appelé seulement si nécessaire)."""
+    global USE_CUDA, _cuda_initialized
+
+    if _cuda_initialized:
+        return USE_CUDA
+
+    try:
+        USE_CUDA = cv2.cuda.getCudaEnabledDeviceCount() > 0
+    except AttributeError:
+        USE_CUDA = False  # OpenCV sans support CUDA compilé
+
+    if USE_CUDA:
+        cv2.cuda.setDevice(0)
+        print(f"✅ GPU CUDA activé ({cv2.cuda.getCudaEnabledDeviceCount()} device(s))")
+    else:
+        print("⚠️  Mode CPU uniquement")
+
+    _cuda_initialized = True
+    return USE_CUDA
+
+# Initialiser CUDA uniquement si pipeline.py est importé depuis le processus principal
+# Quand importé depuis un worker multiprocessing, __name__ vaut 'pipeline'
+# Pour éviter le blocage, on n'initialise CUDA que lors du premier appel réel
+# La variable USE_CUDA reste False par défaut pour les workers
 
 
 # ============================================================
@@ -48,6 +73,53 @@ def ensure_cpu(image):
         return image.download()
     return image
 
+
+# ============================================================
+# OCR ENGINES
+# ============================================================
+
+# Global instance for RapidOCR (Lazy loaded per process)
+_rapid_ocr_engine = None
+
+def get_rapidocr_engine():
+    """Lazy initialization of RapidOCR engine."""
+    global _rapid_ocr_engine
+    if _rapid_ocr_engine is None and RAPIDOCR_AVAILABLE:
+        try:
+            # For GPU usage, RapidOCR will auto-detect onnxruntime-gpu
+            _rapid_ocr_engine = RapidOCR()
+        except Exception as e:
+            print(f"Erreur init RapidOCR: {e}")
+            _rapid_ocr_engine = None # Ensure it stays None if init failed
+    return _rapid_ocr_engine
+
+
+def get_rapidocr_score(image):
+    """OCR RapidOCR (ONNX). Accepte numpy array.
+
+    Returns: Score de confiance moyen (0-100) ou 0.0 si erreur/pas de détection.
+    """
+    if not RAPIDOCR_AVAILABLE:
+        return 0.0
+        
+    try:
+        # RapidOCR attend une image numpy standard
+        engine = get_rapidocr_engine()
+        if engine is None:
+            return 0.0
+
+        # result est une liste de [box, text, score]
+        result, elapse = engine(image) # Image is already CPU numpy array
+        
+        if result:
+            # Calculer la moyenne des scores de confiance (3ème élément de chaque détection)
+            # RapidOCR retourne 0.0-1.0, Tesseract 0-100. On normalise à 0-100.
+            scores = [line[2] for line in result]
+            return (sum(scores) / len(scores)) * 100
+        return 0.0
+    except Exception as e:
+        print(f"⚠️ Erreur RapidOCR: {e}")
+        return 0.0
 
 # ============================================================
 # FONCTIONS DE TRAITEMENT (VERSION STABLE)
@@ -278,7 +350,13 @@ def get_contrast(image):
 
 
 def get_tesseract_score(image):
-    """Score OCR Tesseract (confiance moyenne)."""
+    """Score OCR Tesseract (confiance moyenne).
+    Dispatche vers RapidOCR si USE_RAPID_OCR est activé.
+    """
+    if USE_RAPID_OCR:
+        # Ensure image is CPU numpy array before passing to RapidOCR
+        return get_rapidocr_score(_to_gray_uint8(image))
+
     try:
         cpu_img = _to_gray_uint8(image)
         if cpu_img is None:
@@ -300,7 +378,8 @@ def get_tesseract_score(image):
                 continue
 
         return sum(confs) / len(confs) if confs else 0.0
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Erreur Tesseract: {e}")
         return 0.0
 
 def evaluer_toutes_metriques(image):

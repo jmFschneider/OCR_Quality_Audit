@@ -103,6 +103,9 @@ _time_logger = None
 
 def process_image_fast(args):
     """Worker CPU pour multiprocessing."""
+    import sys
+    print(f"[WORKER] Démarré PID={os.getpid()}", flush=True, file=sys.stderr)
+
     # Mono-thread pour ne pas surcharger les workers
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
@@ -110,16 +113,28 @@ def process_image_fast(args):
 
     try:
         img, params, baseline_score = args
+        print(f"[WORKER {os.getpid()}] Args déballés", flush=True, file=sys.stderr)
     except ValueError:
+        print(f"[WORKER {os.getpid()}] Erreur ValueError", flush=True, file=sys.stderr)
         return None
 
 
     if img is None:
+        print(f"[WORKER {os.getpid()}] Image None", flush=True, file=sys.stderr)
         return None
 
+    print(f"[WORKER {os.getpid()}] Avant init RapidOCR", flush=True, file=sys.stderr)
+    # FIX: Initialiser RapidOCR dans chaque worker si nécessaire
+    # Cela évite les blocages liés au lazy loading global
+    if pipeline.USE_RAPID_OCR and pipeline.RAPIDOCR_AVAILABLE:
+        _ = pipeline.get_rapidocr_engine()
+        print(f"[WORKER {os.getpid()}] RapidOCR initialisé", flush=True, file=sys.stderr)
+
+    print(f"[WORKER {os.getpid()}] Avant pipeline_complet", flush=True, file=sys.stderr)
     # Traitement
     processed_img = pipeline.pipeline_complet(img, params)
 
+    print(f"[WORKER {os.getpid()}] Avant get_tesseract_score", flush=True, file=sys.stderr)
     # Metrics
     score_tess = pipeline.get_tesseract_score(processed_img)
     baseline_score = baseline_score if baseline_score is not None else 0.0
@@ -146,6 +161,8 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
     Returns:
         (avg_delta, avg_abs, avg_sharp, avg_cont)
     """
+    import sys
+    print(f"[EVAL] Début evaluate_pipeline point_id={point_id}, n_images={len(images)}", flush=True, file=sys.stderr)
 
     if not images:
         return 0, 0, 0, 0
@@ -154,6 +171,7 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
     # - Si CUDA : traitement séquentiel sur GPU
     # - Si CPU : multiprocessing parallèle
 
+    print(f"[EVAL] USE_CUDA={pipeline.USE_CUDA}", flush=True, file=sys.stderr)
     if pipeline.USE_CUDA:
         # MODE GPU : Traitement séquentiel
         list_delta, list_abs, list_sharp, list_cont = [], [], [], []
@@ -207,25 +225,46 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
     # MODE CPU (multiprocessing)
     # ======================
     else:
-        # zip_longest sécurise les tailles différentes
-        pool_args = zip_longest(images, repeat(params), baseline_scores, fillvalue=0.0)
+        import platform
+        import sys
 
-        # Limite raisonnable : ne jamais dépasser os.cpu_count()
-        max_workers = os.cpu_count()
-        pool_size = min(len(images), max_workers)
+        # Détection OS : multiprocessing fonctionne sur Linux, problématique sur Windows
+        IS_WINDOWS = platform.system() == 'Windows'
+        ENABLE_MULTIPROCESSING = not IS_WINDOWS  # True sur Linux, False sur Windows
 
-        try:
-            with multiprocessing.Pool(processes=pool_size) as pool:
-                results = pool.map(process_image_fast, pool_args)
+        if ENABLE_MULTIPROCESSING:
+            # MODE MULTIPROCESSING (Linux)
+            print(f"[EVAL] Mode multiprocessing activé (Linux/Unix)", flush=True, file=sys.stderr)
 
-            valid = [r for r in results if r is not None]
-            if not valid:
-                return 0, 0, 0, 0
+            # zip_longest sécurise les tailles différentes
+            pool_args = list(zip_longest(images, repeat(params), baseline_scores, fillvalue=0.0))
 
-            list_delta, list_abs, list_sharp, list_cont = zip(*valid)
+            # Limite raisonnable : ne jamais dépasser os.cpu_count()
+            max_workers = os.cpu_count()
+            pool_size = min(len(images), max_workers)
 
-        except Exception as e:
-            print(f"[optimizer_chat] Erreur multiprocessing → fallback séquentiel : {e}")
+            try:
+                print(f"[MAIN] Création Pool avec {pool_size} workers...", flush=True, file=sys.stderr)
+                with multiprocessing.Pool(processes=pool_size) as pool:
+                    print(f"[MAIN] Pool créé, lancement map()...", flush=True, file=sys.stderr)
+                    results = pool.map(process_image_fast, pool_args)
+                    print(f"[MAIN] map() terminé!", flush=True, file=sys.stderr)
+
+                valid = [r for r in results if r is not None]
+                if not valid:
+                    return 0, 0, 0, 0
+
+                list_delta, list_abs, list_sharp, list_cont = zip(*valid)
+
+            except Exception as e:
+                print(f"[optimizer] Erreur multiprocessing → fallback séquentiel : {e}", flush=True, file=sys.stderr)
+                # Fallback séquentiel en cas d'erreur
+                ENABLE_MULTIPROCESSING = False
+
+        if not ENABLE_MULTIPROCESSING:
+            # MODE SÉQUENTIEL (Windows ou fallback)
+            print(f"[EVAL] Mode séquentiel (Windows ou fallback)", flush=True, file=sys.stderr)
+
             list_delta, list_abs, list_sharp, list_cont = [], [], [], []
 
             for i, img in enumerate(images):
@@ -424,9 +463,12 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
                 params[param_name] = val
 
         # Évaluer (les temps sont sauvegardés dans le fichier CSV si enable_time_logging=True)
+        import sys
+        print(f"[MAIN] Point {idx+1}: Appel evaluate_pipeline()...", flush=True, file=sys.stderr)
         avg_delta, avg_abs, avg_sharp, avg_cont = evaluate_pipeline(
             images, baseline_scores, params, point_id=idx+1
         )
+        print(f"[MAIN] Point {idx+1}: evaluate_pipeline() terminé", flush=True, file=sys.stderr)
 
         # Ajouter au buffer CSV
         row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
