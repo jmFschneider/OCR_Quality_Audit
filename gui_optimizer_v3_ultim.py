@@ -132,6 +132,9 @@ except AttributeError:
     if _SHOULD_PRINT_GPU_INFO:
         print("⚠️  OpenCV compilé SANS support CUDA - Mode CPU uniquement")
     USE_CUDA = False
+except Exception:
+    # Autre erreur
+    USE_CUDA = False
 
 # --- CORE FUNCTIONS (GPU-Optimized) ---
 
@@ -152,32 +155,25 @@ def ensure_cpu(image):
     return image
 
 def get_sharpness(image):
-    """Calcule la netteté. Accepte numpy array ou GpuMat (CUDA)."""
-    if USE_CUDA:
-        gpu_img = ensure_gpu(image)
-        # Créer le filtre Laplacien CUDA
-        laplacian_filter = cv2.cuda.createLaplacianFilter(gpu_img.type(), cv2.CV_64F, ksize=1)
-        gpu_lap = laplacian_filter.apply(gpu_img)
-        # Calcul rapide de la variance via meanStdDev (reste sur GPU)
-        mean, std_dev = cv2.cuda.meanStdDev(gpu_lap)
-        return std_dev[0][0] ** 2
-    else:
-        # Fallback CPU
-        gray = image
-        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-        return laplacian.var()
+    """Calcule la netteté. Accepte numpy array ou GpuMat (CUDA).
+
+    Note: Utilise CPU car cv2.cuda.createLaplacianFilter nécessite srcType == dstType.
+    Le calcul de netteté est rapide sur CPU.
+    """
+    # Toujours utiliser CPU (rapide et évite conversions GPU)
+    img_cpu = ensure_cpu(image)
+    laplacian = cv2.Laplacian(img_cpu, cv2.CV_64F)
+    return laplacian.var()
 
 def get_contrast(image):
-    """Calcule le contraste. Accepte numpy array ou GpuMat (CUDA)."""
-    if USE_CUDA:
-        gpu_img = ensure_gpu(image)
-        # Calcul direct sur GPU sans transfert CPU
-        mean, std_dev = cv2.cuda.meanStdDev(gpu_img)
-        return std_dev[0][0]
-    else:
-        # Fallback CPU
-        gray = image
-        return gray.std()
+    """Calcule le contraste. Accepte numpy array ou GpuMat (CUDA).
+
+    Note: Utilise CPU car cv2.cuda.meanStdDev nécessite des buffers GpuMat.
+    Le calcul de contraste (std) est rapide sur CPU.
+    """
+    # Toujours utiliser CPU (rapide et simple)
+    img_cpu = ensure_cpu(image)
+    return img_cpu.std()
 
 def get_tesseract_score(image):
     """OCR Tesseract avec pre-resize si nécessaire. Accepte numpy array ou GpuMat (CUDA)."""
@@ -198,49 +194,56 @@ def evaluer_toutes_metriques(image):
     return get_tesseract_score(image), get_sharpness(image), get_contrast(image)
 
 def remove_lines_param(gray_image, h_size, v_size, dilate_iter):
-    """Suppression des lignes - Version CUDA-optimized."""
-    if USE_CUDA:
-        # Pipeline 100% GPU
-        gpu_src = ensure_gpu(gray_image)
+    """Suppression des lignes - Version CUDA-optimized.
 
-        # Binarisation OTSU sur GPU
-        _, gpu_thresh = cv2.cuda.threshold(gpu_src, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    Stratégie stable : Threshold sur CPU, morphologie sur GPU.
+    """
+    # 1) S'assurer qu'on a une image CPU uint8 propre
+    cpu_img = ensure_cpu(gray_image)
+    if cpu_img.dtype != np.uint8:
+        cpu_img = cpu_img.astype(np.uint8)
 
-        # Kernels structurants
+    # 2) Threshold OTSU sur CPU (stable et rapide)
+    _, cpu_thresh = cv2.threshold(cpu_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    if not USE_CUDA:
+        # Fallback CPU complet
         h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
         v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
-
-        # Morphologie sur GPU avec filtres natifs
-        morph_h = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, gpu_thresh.type(), h_kernel, iterations=2)
-        morph_v = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, gpu_thresh.type(), v_kernel, iterations=2)
-
-        h_detect = morph_h.apply(gpu_thresh)
-        v_detect = morph_v.apply(gpu_thresh)
-
-        # Combinaison des masques sur GPU
-        gpu_mask = cv2.cuda.addWeighted(h_detect, 1.0, v_detect, 1.0, 0.0)
-
-        # Dilatation finale
-        d_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        morph_dilate = cv2.cuda.createMorphologyFilter(cv2.MORPH_DILATE, gpu_mask.type(), d_kernel, iterations=dilate_iter)
-        gpu_mask = morph_dilate.apply(gpu_mask)
-
-        # Remplacer les lignes détectées par du blanc (max entre image et masque)
-        gpu_result = cv2.cuda.max(gpu_src, gpu_mask)
-        return gpu_result
-    else:
-        # Fallback CPU
-        thresh = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
-        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
-        h_detect = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, h_kernel, iterations=2)
-        v_detect = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel, iterations=2)
+        h_detect = cv2.morphologyEx(cpu_thresh, cv2.MORPH_OPEN, h_kernel, iterations=2)
+        v_detect = cv2.morphologyEx(cpu_thresh, cv2.MORPH_OPEN, v_kernel, iterations=2)
         mask = cv2.addWeighted(h_detect, 1, v_detect, 1, 0.0)
         mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=dilate_iter)
-
-        result = gray_image.copy()
+        result = cpu_img.copy()
         result[mask > 0] = 255
         return result
+
+    # 3) Upload sur GPU pour morphologie
+    gpu_src = ensure_gpu(cpu_img)
+    gpu_thresh = ensure_gpu(cpu_thresh)
+
+    # 4) Kernels structurants
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
+
+    # 5) Morphologie sur GPU
+    morph_h = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, gpu_thresh.type(), h_kernel, iterations=2)
+    morph_v = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, gpu_thresh.type(), v_kernel, iterations=2)
+
+    gpu_h = morph_h.apply(gpu_thresh)
+    gpu_v = morph_v.apply(gpu_thresh)
+
+    # 6) Fusion des masques sur GPU
+    gpu_mask = cv2.cuda.addWeighted(gpu_h, 1.0, gpu_v, 1.0, 0.0)
+
+    # 7) Dilatation finale sur GPU
+    d_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    morph_dilate = cv2.cuda.createMorphologyFilter(cv2.MORPH_DILATE, gpu_mask.type(), d_kernel, iterations=dilate_iter)
+    gpu_mask = morph_dilate.apply(gpu_mask)
+
+    # 8) Fusion finale avec l'image originale sur GPU
+    gpu_result = cv2.cuda.max(gpu_src, gpu_mask)
+    return gpu_result
 
 def normalisation_division(image_gray, kernel_size):
     """Normalisation par division - Version CUDA-optimized."""
@@ -250,10 +253,22 @@ def normalisation_division(image_gray, kernel_size):
         # Pipeline 100% GPU
         gpu_src = ensure_gpu(image_gray)
 
-        # Conversion en float32 pour calculs précis
-        gpu_float = gpu_src.convertTo(cv2.CV_32F)
+        # LIMITATION CUDA: createGaussianFilter supporte uniquement kernel_size <= 32
+        # Si kernel_size > 32, fallback CPU pour cette opération
+        if kernel_size > 31:
+            # Fallback CPU pour les grands kernels
+            img_cpu = ensure_cpu(gpu_src)
+            fond = cv2.GaussianBlur(img_cpu, (kernel_size, kernel_size), 0)
+            result = cv2.divide(img_cpu, fond, scale=255)
+            # Retourner sur GPU si besoin pour la suite du pipeline
+            return ensure_gpu(result)
 
-        # Filtre Gaussien CUDA natif
+        # Conversion en float32 pour calculs précis
+        # IMPORTANT: La syntaxe pour GpuMat.convertTo nécessite une destination
+        gpu_float = cv2.cuda_GpuMat()
+        gpu_src.convertTo(cv2.CV_32F, gpu_float)
+
+        # Filtre Gaussien CUDA natif (limité à kernel_size <= 31)
         gaussian_filter = cv2.cuda.createGaussianFilter(cv2.CV_32F, cv2.CV_32F,
                                                          (kernel_size, kernel_size), 0)
         gpu_blur = gaussian_filter.apply(gpu_float)
@@ -262,7 +277,9 @@ def normalisation_division(image_gray, kernel_size):
         gpu_result = cv2.cuda.divide(gpu_float, gpu_blur, scale=255.0)
 
         # Reconversion en uint8
-        return gpu_result.convertTo(cv2.CV_8U)
+        gpu_uint8 = cv2.cuda_GpuMat()
+        gpu_result.convertTo(cv2.CV_8U, gpu_uint8)
+        return gpu_uint8
     else:
         # Fallback CPU
         fond = cv2.GaussianBlur(image_gray, (kernel_size, kernel_size), 0)
@@ -272,20 +289,14 @@ def estimate_noise_level(image):
     """
     Estime le niveau de bruit dans une image en utilisant la variance locale.
     Retourne un score de bruit (plus élevé = plus de bruit).
-    Version CUDA-optimized.
+
+    Note: Cette fonction utilise CPU car cv2.cuda.createLaplacianFilter nécessite srcType == dstType,
+    et la conversion de types est coûteuse. L'estimation de bruit est rapide sur CPU.
     """
-    if USE_CUDA:
-        gpu_img = ensure_gpu(image)
-        # Filtre Laplacien CUDA
-        laplacian_filter = cv2.cuda.createLaplacianFilter(gpu_img.type(), cv2.CV_64F, ksize=3)
-        gpu_lap = laplacian_filter.apply(gpu_img)
-        # Calcul direct sur GPU
-        mean, std_dev = cv2.cuda.meanStdDev(gpu_lap)
-        return std_dev[0][0] ** 2
-    else:
-        # Fallback CPU
-        laplacian = cv2.Laplacian(image, cv2.CV_64F)
-        return laplacian.var()
+    # Toujours utiliser CPU pour l'estimation de bruit (rapide et évite conversions GPU)
+    img_cpu = ensure_cpu(image)
+    laplacian = cv2.Laplacian(img_cpu, cv2.CV_64F)
+    return laplacian.var()
 
 def adaptive_denoising(image, base_h_param, noise_threshold=100):
     """
@@ -405,8 +416,9 @@ def process_image_data_fast(args):
     - Pas de mesure de temps (time.time)
     - Pas de print
     - Appel direct au pipeline sans overhead
+    - Utilisé uniquement en mode CPU (multiprocessing)
     """
-    # FORCER LE MONO-THREADING
+    # FORCER LE MONO-THREADING (crucial pour performances multiprocessing)
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -431,6 +443,7 @@ def process_image_data_wrapper(args):
     """
     Wrapper function to process a single image's data. Takes a tuple of (image_data, params, baseline_tess_score)
     as input to be compatible with pool.map.
+    Utilisé uniquement en mode CPU (multiprocessing).
     """
     # Lire le flag timing depuis la variable d'environnement (hérité du process parent)
     global ENABLE_DETAILED_TIMING
@@ -747,6 +760,11 @@ class OptimizerGUI:
         for f in self.image_files:
             img = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
             if img is not None:
+                # Garantir uint8 dès le chargement (requis pour CUDA threshold et tout le pipeline)
+                if img.dtype != np.uint8:
+                    print(f"[WARNING] Image {f} chargée avec dtype {img.dtype}, conversion en uint8")
+                    img = img.astype(np.uint8)
+
                 # Garder en numpy pour compatibilité pickle/multiprocessing
                 # La conversion UMat se fera dans chaque worker
                 self.loaded_images.append(img)
@@ -909,56 +927,83 @@ class OptimizerGUI:
         if not self.loaded_images:
             return 0, 0, 0
 
-        pool_args = zip(self.loaded_images, repeat(params), self.baseline_scores)
+        # STRATÉGIE ADAPTATIVE :
+        # - Si CUDA activé : traitement séquentiel sur GPU (le GPU parallélise déjà en interne)
+        # - Si pas CUDA : multiprocessing sur CPU pour exploiter tous les cores
 
-        # Optimisation Hyperthreading : Utiliser 1.5x les cores physiques pour CPU avec HT
-        # Sur un CPU 12c/24t, cela donne 18 workers au lieu de 12
-        optimal_workers = int(os.cpu_count() * 1.5)
-        pool_size = min(len(self.loaded_images), optimal_workers)
-        
-        # Choix de la fonction worker selon le mode
-        worker_func = process_image_data_wrapper if self.debug_mode_var.get() else process_image_data_fast
-
-        try:
-            with multiprocessing.Pool(processes=pool_size) as pool:
-                results = pool.map(worker_func, pool_args)
-            
-            valid_results = [r for r in results if r is not None]
-            if not valid_results:
-                return 0, 0, 0
-
-            list_delta, list_abs, list_sharp, list_cont = zip(*valid_results)
-
-            avg_delta = sum(list_delta) / len(list_delta) if list_delta else 0
-            avg_abs = sum(list_abs) / len(list_abs) if list_abs else 0
-            avg_sharp = sum(list_sharp) / len(list_sharp) if list_sharp else 0
-            avg_cont = sum(list_cont) / len(list_cont) if list_cont else 0
-            return avg_delta, avg_abs, avg_sharp, avg_cont
-
-        except Exception as e:
-            print(f"Erreur de multiprocessing, passage en mode séquentiel: {e}")
+        if USE_CUDA:
+            # MODE GPU : Traitement séquentiel (le GPU parallélise les opérations CUDA)
             list_delta, list_abs, list_sharp, list_cont = [], [], [], []
             for i, img in enumerate(self.loaded_images):
-                # Mode séquentiel : besoin de recalculer la baseline ou de la récupérer
-                # Comme on a self.baseline_scores, on l'utilise
                 baseline = self.baseline_scores[i] if i < len(self.baseline_scores) else 0
-                
+
                 processed_img = pipeline_complet(img, params)
                 tess_abs = get_tesseract_score(processed_img)
                 tess_delta = tess_abs - baseline
                 sharp = get_sharpness(processed_img)
                 cont = get_contrast(processed_img)
-                
+
                 list_delta.append(tess_delta)
                 list_abs.append(tess_abs)
                 list_sharp.append(sharp)
                 list_cont.append(cont)
-            
+
             avg_delta = sum(list_delta) / len(list_delta) if list_delta else 0
             avg_abs = sum(list_abs) / len(list_abs) if list_abs else 0
             avg_sharp = sum(list_sharp) / len(list_sharp) if list_sharp else 0
             avg_cont = sum(list_cont) / len(list_cont) if list_cont else 0
             return avg_delta, avg_abs, avg_sharp, avg_cont
+
+        else:
+            # MODE CPU : Multiprocessing pour exploiter tous les cores
+            pool_args = zip(self.loaded_images, repeat(params), self.baseline_scores)
+
+            # Optimisation Hyperthreading : Utiliser 1.5x les cores physiques pour CPU avec HT
+            # Sur un CPU 12c/24t, cela donne 18 workers au lieu de 12
+            optimal_workers = int(os.cpu_count() * 1.5)
+            pool_size = min(len(self.loaded_images), optimal_workers)
+
+            # Choix de la fonction worker selon le mode
+            worker_func = process_image_data_wrapper if self.debug_mode_var.get() else process_image_data_fast
+
+            try:
+                with multiprocessing.Pool(processes=pool_size) as pool:
+                    results = pool.map(worker_func, pool_args)
+
+                valid_results = [r for r in results if r is not None]
+                if not valid_results:
+                    return 0, 0, 0
+
+                list_delta, list_abs, list_sharp, list_cont = zip(*valid_results)
+
+                avg_delta = sum(list_delta) / len(list_delta) if list_delta else 0
+                avg_abs = sum(list_abs) / len(list_abs) if list_abs else 0
+                avg_sharp = sum(list_sharp) / len(list_sharp) if list_sharp else 0
+                avg_cont = sum(list_cont) / len(list_cont) if list_cont else 0
+                return avg_delta, avg_abs, avg_sharp, avg_cont
+
+            except Exception as e:
+                print(f"Erreur de multiprocessing, passage en mode séquentiel: {e}")
+                list_delta, list_abs, list_sharp, list_cont = [], [], [], []
+                for i, img in enumerate(self.loaded_images):
+                    baseline = self.baseline_scores[i] if i < len(self.baseline_scores) else 0
+
+                    processed_img = pipeline_complet(img, params)
+                    tess_abs = get_tesseract_score(processed_img)
+                    tess_delta = tess_abs - baseline
+                    sharp = get_sharpness(processed_img)
+                    cont = get_contrast(processed_img)
+
+                    list_delta.append(tess_delta)
+                    list_abs.append(tess_abs)
+                    list_sharp.append(sharp)
+                    list_cont.append(cont)
+
+                avg_delta = sum(list_delta) / len(list_delta) if list_delta else 0
+                avg_abs = sum(list_abs) / len(list_abs) if list_abs else 0
+                avg_sharp = sum(list_sharp) / len(list_sharp) if list_sharp else 0
+                avg_cont = sum(list_cont) / len(list_cont) if list_cont else 0
+                return avg_delta, avg_abs, avg_sharp, avg_cont
 
     def start_optimization(self):
         # Reset timing flag for new optimization run

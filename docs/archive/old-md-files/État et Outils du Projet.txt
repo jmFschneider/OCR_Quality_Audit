@@ -1,0 +1,25 @@
+L'objectif de ce projet est d'optimiser le prétraitement des scans de fichiers manuscrits pour ensuite les passer à Gemini OCR.
+
+Nous avons développé une Interface Graphique (GUI) en Tkinter pour contrôler le processus et visualiser les résultats.
+
+Langage : Python
+
+Bibliothèques Clés :
+
+Image/OCR : OpenCV et PyTesseract
+
+Optimisation : Optuna
+
+Approche : Nous utilisons les algorithmes d'Optuna pour effectuer une recherche intelligente des hyperparamètres sur les 7 paramètres du pipeline.
+
+Algorithmes Implémentés : Un sélecteur permet de choisir entre :
+
+TPE (Bayésien)
+
+Sobol (Exploration Quasi-Monte Carlo)
+
+NSGA-II (Algorithme Génétique)
+
+Statistiques/Traçabilité : Tous les résultats de chaque essai (paramètres et score) sont automatiquement enregistrés dans un fichier CSV horodaté pour analyse statistique ultérieure.
+
+Score Actuel/Meilleur : Notre meilleure combinaison de paramètres a atteint un score de confiance Tesseract de l'ordre de 53%.
