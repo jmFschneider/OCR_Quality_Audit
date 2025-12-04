@@ -1,0 +1,17 @@
+# Contraintes pip pour protéger OpenCV CUDA compilé
+#
+# Ce fichier empêche l'installation accidentelle de opencv-python
+# qui écraserait notre OpenCV 4.8.0 compilé avec CUDA 11.8
+#
+# Usage:
+#   export PIP_CONSTRAINT=/home/schneider/PycharmProjects/OCR_Quality_Audit/pip-constraints.txt
+#   pip install <package>
+#
+# Pour rendre permanent, ajoutez à ~/.bashrc:
+#   export PIP_CONSTRAINT=/home/schneider/PycharmProjects/OCR_Quality_Audit/pip-constraints.txt
+
+# Bloquer toutes les variantes d'opencv-python avec une version impossible
+opencv-python==999.0.0
+opencv-python-headless==999.0.0
+opencv-contrib-python==999.0.0
+opencv-contrib-python-headless==999.0.0

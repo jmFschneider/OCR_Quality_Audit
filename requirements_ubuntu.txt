@@ -1,20 +1,38 @@
 # Requirements pour OCR Quality Audit - Ubuntu 22.04 avec CUDA
-# Installation système : pip3 install --user -r requirements_ubuntu.txt
+# Installation : pip3 install --user -r requirements_ubuntu.txt
+#
+# IMPORTANT: OpenCV 4.8.0 avec CUDA 11.8 doit être compilé manuellement AVANT
+# Voir: docs/installation/ ou Phase3_Migration_Ubuntu_CUDA/
 
-# Core dependencies
-numpy==1.26.4
-scipy==1.11.3
-pandas==2.1.1
+# ===================================================================
+# CORE DEPENDENCIES
+# ===================================================================
+
+# Calcul numérique
+numpy==1.26.4              # Compatible avec OpenCV CUDA compilé
+scipy==1.11.3              # Optimisation (Sobol, L-BFGS-B)
+pandas==2.1.1              # Analyse de données
 
 # Image processing & OCR
-pytesseract==0.3.13
-pillow==12.0.0
+pytesseract==0.3.13        # Wrapper Tesseract (tesseract-ocr doit être installé)
+pillow==12.0.0             # PIL pour manipulation d'images
 
 # Visualization
-matplotlib==3.8.0
+matplotlib==3.8.0          # Graphiques de base
+seaborn==0.12.0            # Visualisations statistiques
 
-# Optimization (optionnel)
-optuna==4.6.0
+# Optimization
+optuna==4.6.0              # Framework Bayésien pour screening Sobol
 
-# Note: OpenCV 4.8.0 avec CUDA 11.8 doit être compilé manuellement
-# Voir: Phase3_Migration_Ubuntu_CUDA/compile_opencv_numpy126.sh
+# ===================================================================
+# PROTECTION OpenCV CUDA
+# ===================================================================
+# ATTENTION: N'installez JAMAIS opencv-python sur ce système!
+# Créez un fichier pip-constraints.txt avec:
+#   opencv-python==999.0.0
+#   opencv-python-headless==999.0.0
+#   opencv-contrib-python==999.0.0
+#
+# Vérification CUDA:
+#   python3 -c "import cv2; print(f'{cv2.__version__} - CUDA:{cv2.cuda.getCudaEnabledDeviceCount()}')"
+#   # Doit afficher: 4.8.0 - CUDA:1
