@@ -62,9 +62,10 @@ class OptimizerGUI:
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Info GPU/CPU
+        mode_text = f"Mode: {'✅ GPU CUDA + Tesseract' if pipeline.USE_CUDA else '⚠️  CPU + Tesseract'}"
         mode_label = ttk.Label(
-            main_frame, 
-            text=f"Mode: {'✅ GPU CUDA' if pipeline.USE_CUDA else '⚠️  CPU'}",
+            main_frame,
+            text=mode_text,
             font=("Arial", 12, "bold")
         )
         mode_label.grid(row=0, column=0, columnspan=3, pady=5)
@@ -133,9 +134,23 @@ class OptimizerGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=80)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
+        # Barre de progression
+        progress_frame = ttk.Frame(main_frame)
+        progress_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+
+        self.progress_label = ttk.Label(progress_frame, text="")
+        self.progress_label.grid(row=0, column=0, sticky=tk.W, padx=5)
+
+        self.progress_bar = ttk.Progressbar(
+            progress_frame,
+            mode='determinate',
+            length=400
+        )
+        self.progress_bar.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), padx=5)
+
         # Status
         self.status_label = ttk.Label(main_frame, text="Prêt", relief=tk.SUNKEN)
-        self.status_label.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E))
+        self.status_label.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E))
 
         # Configuration grille
         self.master.columnconfigure(0, weight=1)
@@ -144,6 +159,7 @@ class OptimizerGUI:
         main_frame.rowconfigure(4, weight=1)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
+        progress_frame.columnconfigure(0, weight=1)
 
     def log(self, message):
         """Ajoute un message au log."""
@@ -176,11 +192,20 @@ class OptimizerGUI:
     def load_images(self):
         """Charge toutes les images en mémoire."""
         import numpy as np
+
+        total_images = len(self.image_files)
         self.log("📥 Chargement des images...")
+
+        # Initialiser la barre de progression
+        self.progress_bar['maximum'] = total_images + 1  # +1 pour le calcul baseline
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text="Chargement des images...")
+
         self.loaded_images = []
         self.baseline_scores = []
 
-        for f in self.image_files:
+        # Charger les images avec progression
+        for idx, f in enumerate(self.image_files, 1):
             img = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 # Garantir uint8 pour compatibilité GPU
@@ -188,12 +213,29 @@ class OptimizerGUI:
                     img = img.astype(np.uint8)
                 self.loaded_images.append(img)
 
+            # Mettre à jour la progression
+            self.progress_bar['value'] = idx
+            self.progress_label.config(text=f"Chargement: {idx}/{total_images} images")
+            self.master.update_idletasks()
+
         # Calcul des scores baseline
         self.log(f"🔍 Calcul des scores baseline...")
+        self.progress_label.config(text="Calcul des scores baseline...")
+        self.master.update_idletasks()
+
         self.baseline_scores = optimizer.calculate_baseline_scores(self.loaded_images)
+
+        # Compléter la progression
+        self.progress_bar['value'] = total_images + 1
+        self.progress_label.config(text="✅ Chargement terminé")
 
         self.log(f"✅ {len(self.loaded_images)} images chargées")
         self.log(f"✅ {len(self.baseline_scores)} scores baseline calculés")
+        self.log(f"✅ Chargement initial terminé")
+
+        # Réinitialiser la barre après 2 secondes
+        self.master.after(2000, lambda: self.progress_bar.config(value=0))
+        self.master.after(2000, lambda: self.progress_label.config(text=""))
 
     def start_sobol(self):
         """Lance l'optimisation Sobol dans un thread."""
@@ -253,6 +295,10 @@ class OptimizerGUI:
         self.log(f"📊 Paramètres actifs: {list(active_ranges.keys())}")
         self.log(f"🔒 Paramètres fixes: {list(fixed_params.keys())}")
 
+        # Initialiser la barre de progression pour Sobol
+        self.master.after(0, lambda: self.progress_bar.config(maximum=n_points, value=0))
+        self.master.after(0, lambda: self.progress_label.config(text=f"Screening Sobol: 0/{n_points} points"))
+
         # Callback pour mise à jour de la GUI
         def sobol_callback(point_idx, scores_dict, params_dict):
             msg = (f"[Point {point_idx+1}] Delta: {scores_dict['tesseract_delta']:.2f}% | "
@@ -262,6 +308,12 @@ class OptimizerGUI:
 
             # Mise à jour thread-safe
             self.master.after(0, self.log, msg)
+
+            # Mettre à jour la barre de progression
+            self.master.after(0, lambda: self.progress_bar.config(value=point_idx + 1))
+            self.master.after(0, lambda: self.progress_label.config(
+                text=f"Screening Sobol: {point_idx + 1}/{n_points} points"
+            ))
 
         # Option pour afficher les temps détaillés (peut ralentir l'UI)
         verbose_timing = False  # Mettre True pour debug
@@ -284,16 +336,34 @@ class OptimizerGUI:
                 for key, val in best_params.items():
                     self.log(f"   {key}: {val}")
                 self.log(f"\n📁 Résultats sauvegardés dans: {csv_file}")
+                self.log(f"✅ Screening Sobol terminé - {n_points} points évalués")
                 self.status_label.config(text=f"✅ Sobol terminé! Résultats: {csv_file}")
+
+                # Mettre à jour la barre de progression
+                self.progress_label.config(text=f"✅ Screening terminé - {n_points} points")
+
+                # Réinitialiser après 3 secondes
+                self.master.after(3000, lambda: self.progress_bar.config(value=0))
+                self.master.after(3000, lambda: self.progress_label.config(text=""))
             else:
                 self.log("⚠️ Aucun meilleur paramètre trouvé (screening annulé?)")
                 self.status_label.config(text="⏹️ Screening annulé")
+                self.progress_label.config(text="⏹️ Annulé")
+
+                # Réinitialiser après 2 secondes
+                self.master.after(2000, lambda: self.progress_bar.config(value=0))
+                self.master.after(2000, lambda: self.progress_label.config(text=""))
 
         except Exception as e:
             self.log(f"❌ Erreur pendant le screening: {e}")
             import traceback
             self.log(traceback.format_exc())
             self.status_label.config(text="❌ Erreur screening")
+            self.progress_label.config(text="❌ Erreur")
+
+            # Réinitialiser après 2 secondes
+            self.master.after(2000, lambda: self.progress_bar.config(value=0))
+            self.master.after(2000, lambda: self.progress_label.config(text=""))
 
     def cancel_optimization(self):
         """Annule l'optimisation en cours."""

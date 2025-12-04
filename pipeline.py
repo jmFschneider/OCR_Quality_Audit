@@ -2,34 +2,12 @@
 pipeline.py - Traitement d'images avec support CUDA
 Basé sur sobol_test_pipeline.py (version stable qui fonctionne)
 
-Supporte deux moteurs OCR:
-- Tesseract (défaut): Excellent pour le français, très précis
-- RapidOCR (optionnel): Plus rapide, basé sur ONNX Runtime
+Moteur OCR: Tesseract (excellent pour le français, stable avec CUDA)
 """
 
 import cv2
 import numpy as np
 import pytesseract
-import os
-
-# ============================================================
-# RAPIDOCR (OPTIONNEL)
-# ============================================================
-
-# RapidOCR Imports - Installation: pip install rapidocr-onnxruntime
-try:
-    from rapidocr_onnxruntime import RapidOCR
-    RAPIDOCR_AVAILABLE = True
-except ImportError:
-    RAPIDOCR_AVAILABLE = False
-
-# Switch OCR engine via environment variable
-USE_RAPID_OCR = os.environ.get('OCR_USE_RAPIDOCR', '0') == '1'
-
-if USE_RAPID_OCR and not RAPIDOCR_AVAILABLE:
-    print("⚠️  RapidOCR demandé mais non installé. Utilisez: pip install rapidocr-onnxruntime")
-    print("    Retour à Tesseract...")
-    USE_RAPID_OCR = False
 
 # ============================================================
 # DÉTECTION CUDA
@@ -44,13 +22,9 @@ except AttributeError:
 if USE_CUDA:
     cv2.cuda.setDevice(0)
     print(f"✅ GPU CUDA activé ({cv2.cuda.getCudaEnabledDeviceCount()} device(s))")
+    print("📝 Moteur OCR: Tesseract + OpenCV CUDA")
 else:
     print("⚠️  Mode CPU uniquement")
-
-# Afficher le moteur OCR utilisé
-if USE_RAPID_OCR:
-    print("📝 Moteur OCR: RapidOCR (ONNX)")
-else:
     print("📝 Moteur OCR: Tesseract")
 
 
@@ -74,59 +48,6 @@ def ensure_cpu(image):
     if USE_CUDA and isinstance(image, cv2.cuda_GpuMat):
         return image.download()
     return image
-
-
-# ============================================================
-# MOTEURS OCR
-# ============================================================
-
-# Global instance for RapidOCR (Lazy loaded per process)
-_rapid_ocr_engine = None
-
-def get_rapidocr_engine():
-    """Lazy initialization of RapidOCR engine."""
-    global _rapid_ocr_engine
-    if _rapid_ocr_engine is None and RAPIDOCR_AVAILABLE:
-        try:
-            # For GPU usage, RapidOCR will auto-detect onnxruntime-gpu
-            _rapid_ocr_engine = RapidOCR()
-            print("✅ RapidOCR engine initialized")
-        except Exception as e:
-            print(f"❌ Erreur init RapidOCR: {e}")
-            _rapid_ocr_engine = None
-    return _rapid_ocr_engine
-
-
-def get_rapidocr_score(image):
-    """OCR RapidOCR (ONNX). Accepte numpy array.
-
-    Returns:
-        Score de confiance moyen (0-100) ou 0.0 si erreur/pas de détection.
-    """
-    if not RAPIDOCR_AVAILABLE:
-        return 0.0
-
-    try:
-        cpu_img = _to_gray_uint8(image)
-        if cpu_img is None:
-            return 0.0
-
-        engine = get_rapidocr_engine()
-        if engine is None:
-            return 0.0
-
-        # result est une liste de [box, text, score]
-        result, elapse = engine(cpu_img)
-
-        if result:
-            # Calculer la moyenne des scores de confiance (3ème élément)
-            # RapidOCR retourne 0.0-1.0, Tesseract 0-100. Normaliser à 0-100.
-            scores = [line[2] for line in result]
-            return (sum(scores) / len(scores)) * 100
-        return 0.0
-    except Exception as e:
-        print(f"⚠️ Erreur RapidOCR: {e}")
-        return 0.0
 
 
 # ============================================================
@@ -358,20 +279,11 @@ def get_contrast(image):
 
 
 def get_tesseract_score(image):
-    """Score OCR - Utilise Tesseract ou RapidOCR selon configuration.
-
-    Configuration via variable d'environnement:
-        export OCR_USE_RAPIDOCR=1  # Utilise RapidOCR
-        export OCR_USE_RAPIDOCR=0  # Utilise Tesseract (défaut)
+    """Score OCR Tesseract (confiance moyenne).
 
     Returns:
         Score de confiance moyen (0-100)
     """
-    # Switch entre RapidOCR et Tesseract
-    if USE_RAPID_OCR:
-        return get_rapidocr_score(image)
-
-    # Tesseract (comportement par défaut)
     try:
         cpu_img = _to_gray_uint8(image)
         if cpu_img is None:
