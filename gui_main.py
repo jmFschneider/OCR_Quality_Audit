@@ -218,19 +218,25 @@ class OptimizerGUI:
             self.progress_label.config(text=f"Chargement: {idx}/{total_images} images")
             self.master.update_idletasks()
 
-        # Calcul des scores baseline
+        # Calcul des scores baseline avec multiprocessing
+        import multiprocessing as mp
+        cpu_count = mp.cpu_count()
         self.log(f"🔍 Calcul des scores baseline...")
-        self.progress_label.config(text="Calcul des scores baseline...")
+        self.progress_label.config(text=f"Calcul baseline (parallèle: {cpu_count} workers)...")
         self.master.update_idletasks()
 
+        import time
+        t0 = time.time()
         self.baseline_scores = optimizer.calculate_baseline_scores(self.loaded_images)
+        t_baseline = time.time() - t0
 
         # Compléter la progression
         self.progress_bar['value'] = total_images + 1
         self.progress_label.config(text="✅ Chargement terminé")
 
         self.log(f"✅ {len(self.loaded_images)} images chargées")
-        self.log(f"✅ {len(self.baseline_scores)} scores baseline calculés")
+        self.log(f"✅ {len(self.baseline_scores)} scores baseline calculés en {t_baseline:.1f}s")
+        self.log(f"   (Traitement parallèle: {cpu_count} workers)")
         self.log(f"✅ Chargement initial terminé")
 
         # Réinitialiser la barre après 2 secondes
