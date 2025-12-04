@@ -253,23 +253,38 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
 # CALCUL DES SCORES BASELINE
 # ============================================================
 
-def calculate_baseline_scores(images):
+def calculate_baseline_scores(images, use_multiprocessing=True):
     """Calcule les scores OCR des images originales.
 
     Args:
         images: Liste d'images (numpy arrays)
+        use_multiprocessing: Si True, utilise traitement parallèle (défaut: True)
 
     Returns:
         Liste des scores baseline
     """
-    baseline_scores = []
-    for img in images:
-        try:
-            score = pipeline.get_tesseract_score(img)
-        except Exception:
-            score = 0.0
-        baseline_scores.append(score)
-    return baseline_scores
+    if use_multiprocessing and len(images) > 1:
+        # Traitement parallèle (2-3x plus rapide)
+        from concurrent.futures import ProcessPoolExecutor
+        import multiprocessing as mp
+
+        max_workers = min(mp.cpu_count(), len(images))
+        print(f"🚀 Calcul baseline: {len(images)} images avec {max_workers} workers")
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            baseline_scores = list(executor.map(pipeline.get_tesseract_score, images))
+
+        return baseline_scores
+    else:
+        # Traitement séquentiel (fallback)
+        baseline_scores = []
+        for img in images:
+            try:
+                score = pipeline.get_tesseract_score(img)
+            except Exception:
+                score = 0.0
+            baseline_scores.append(score)
+        return baseline_scores
 
 
 # ============================================================

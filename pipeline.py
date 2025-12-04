@@ -335,3 +335,36 @@ def evaluer_toutes_metriques(image):
         tess, sharp, cont,
         t_tess, t_sharp, t_cont,
     )
+
+
+def evaluer_toutes_metriques_batch(images, max_workers=None):
+    """Calcule les métriques pour plusieurs images en parallèle.
+
+    Utilise multiprocessing pour accélérer le traitement Tesseract OCR.
+    Speedup typique: 2-3x sur CPU multi-core.
+
+    Args:
+        images: Liste d'images (numpy arrays)
+        max_workers: Nombre de workers (None = auto-detect CPU count)
+
+    Returns:
+        Liste de tuples (tess, sharp, cont, t_tess, t_sharp, t_cont)
+    """
+    import time
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing as mp
+
+    if max_workers is None:
+        max_workers = min(mp.cpu_count(), len(images))
+
+    print(f"🚀 Traitement parallèle: {len(images)} images avec {max_workers} workers")
+
+    t0_total = time.time()
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(evaluer_toutes_metriques, images))
+
+    t_total = (time.time() - t0_total) * 1000
+    print(f"✅ Batch terminé en {t_total:.0f}ms ({t_total/len(images):.0f}ms/image)")
+
+    return results
