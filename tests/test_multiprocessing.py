@@ -102,7 +102,7 @@ def test_batch_metrics():
 
     # Test batch
     print("Calcul des métriques en batch...")
-    results = pipeline.evaluer_toutes_metriques_batch(processed, max_workers=2)
+    results = pipeline.evaluer_toutes_metriques_batch(processed, max_workers=2, verbose=True)
 
     print(f"\n✅ {len(results)} résultats obtenus")
     for i, (tess, sharp, cont, t_tess, t_sharp, t_cont) in enumerate(results):

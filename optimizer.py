@@ -155,35 +155,43 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
     # - Si CPU : multiprocessing parallèle
 
     if pipeline.USE_CUDA:
-        # MODE GPU : Traitement séquentiel
+        # MODE GPU : Pipeline séquentiel + Métriques parallèles
+        # Le GPU ne peut pas être partagé, mais le calcul OCR CPU peut être parallélisé
+
+        import time
         list_delta, list_abs, list_sharp, list_cont = [], [], [], []
 
-        for i, img in enumerate(images):
+        # PHASE 1: Pipeline CUDA (séquentiel - obligatoire)
+        processed_images = []
+        t0_pipeline = time.time()
+
+        for img in images:
+            processed = pipeline.pipeline_complet(img, params)
+            processed_images.append(processed)
+
+        t_pipeline_total = (time.time() - t0_pipeline) * 1000
+        t_pipeline_avg = t_pipeline_total / len(images) if images else 0
+
+        # PHASE 2: Métriques OCR (parallèle - multiprocessing)
+        t0_metrics = time.time()
+        metrics_results = pipeline.evaluer_toutes_metriques_batch(processed_images)
+        t_metrics_total = (time.time() - t0_metrics) * 1000
+
+        # PHASE 3: Accumulation des résultats
+        global _time_logger
+
+        for i, (tess_abs, sharp, cont, t_tess, t_sharp, t_cont) in enumerate(metrics_results):
             baseline = (
                 baseline_scores[i] if i < len(baseline_scores)
                 else 0.0
             )
 
-            import time
-            t0_total = time.time()
-
-            # ---- Pipeline CUDA + CPU preprocessing ----
-            processed_img = pipeline.pipeline_complet(img, params)
-
-            # ---- Metrics + profiling ----
-            (tess_abs,
-             sharp,
-             cont,
-             t_tess,
-             t_sharp,
-             t_cont) = pipeline.evaluer_toutes_metriques(processed_img)
-
-            t_total = (time.time() - t0_total) * 1000
-            t_cuda_cpu = t_total - (t_tess + t_sharp + t_cont)
-
             # Logger les temps (si activé)
-            global _time_logger
             if _time_logger is not None:
+                # Temps CUDA : moyenne du batch (approximation)
+                t_cuda_cpu = t_pipeline_avg
+                t_total = t_cuda_cpu + t_tess + t_sharp + t_cont
+
                 _time_logger.log(
                     point_id=point_id,
                     image_id=i,
@@ -197,7 +205,7 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
                     score_cont=cont
                 )
 
-            # ---- Accumulation résultats ----
+            # Accumulation résultats
             list_abs.append(tess_abs)
             list_delta.append(tess_abs - baseline)
             list_sharp.append(sharp)

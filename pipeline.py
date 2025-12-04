@@ -337,7 +337,7 @@ def evaluer_toutes_metriques(image):
     )
 
 
-def evaluer_toutes_metriques_batch(images, max_workers=None):
+def evaluer_toutes_metriques_batch(images, max_workers=None, verbose=False):
     """Calcule les métriques pour plusieurs images en parallèle.
 
     Utilise multiprocessing pour accélérer le traitement Tesseract OCR.
@@ -346,6 +346,7 @@ def evaluer_toutes_metriques_batch(images, max_workers=None):
     Args:
         images: Liste d'images (numpy arrays)
         max_workers: Nombre de workers (None = auto-detect CPU count)
+        verbose: Si True, affiche les messages de progression (défaut: False)
 
     Returns:
         Liste de tuples (tess, sharp, cont, t_tess, t_sharp, t_cont)
@@ -357,7 +358,8 @@ def evaluer_toutes_metriques_batch(images, max_workers=None):
     if max_workers is None:
         max_workers = min(mp.cpu_count(), len(images))
 
-    print(f"🚀 Traitement parallèle: {len(images)} images avec {max_workers} workers")
+    if verbose:
+        print(f"🚀 Traitement parallèle: {len(images)} images avec {max_workers} workers")
 
     t0_total = time.time()
 
@@ -365,6 +367,8 @@ def evaluer_toutes_metriques_batch(images, max_workers=None):
         results = list(executor.map(evaluer_toutes_metriques, images))
 
     t_total = (time.time() - t0_total) * 1000
-    print(f"✅ Batch terminé en {t_total:.0f}ms ({t_total/len(images):.0f}ms/image)")
+
+    if verbose:
+        print(f"✅ Batch terminé en {t_total:.0f}ms ({t_total/len(images):.0f}ms/image)")
 
     return results
