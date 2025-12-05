@@ -18,6 +18,7 @@ import multiprocessing
 # Imports des modules locaux
 import pipeline
 import optimizer
+import scipy_optimizer
 
 # Configuration
 INPUT_FOLDER = "test_scans"
@@ -108,24 +109,69 @@ class OptimizerGUI:
         opt_frame = ttk.LabelFrame(main_frame, text="🚀 Optimisation", padding="5")
         opt_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
 
-        ttk.Label(opt_frame, text="Exposant Sobol (2^n):").grid(row=0, column=0, padx=5)
+        # Ligne 1: Mode et Algorithme
+        ttk.Label(opt_frame, text="Mode:").grid(row=0, column=0, sticky="w", padx=5)
+        self.mode_var = tk.StringVar(value="Screening")
+        self.mode_combo = ttk.Combobox(
+            opt_frame,
+            textvariable=self.mode_var,
+            state="readonly",
+            width=10,
+            values=["Screening", "SciPy"]
+        )
+        self.mode_combo.grid(row=0, column=1, sticky="w", padx=5)
+        self.mode_combo.bind("<<ComboboxSelected>>", self.on_mode_select)
 
-        # Variable pour l'exposant avec callback pour mise à jour dynamique
+        ttk.Label(opt_frame, text="Algorithme:").grid(row=0, column=2, sticky="w", padx=(15, 5))
+
+        # Algorithmes par mode
+        self.scipy_algos = ['Nelder-Mead', 'Powell', 'CG', 'BFGS', 'L-BFGS-B', 'TNC', 'COBYLA', 'SLSQP']
+
+        self.algo_var = tk.StringVar(value="Sobol DoE")
+        self.algo_combo = ttk.Combobox(
+            opt_frame,
+            textvariable=self.algo_var,
+            state="readonly",
+            width=18,
+            values=["Sobol DoE"]
+        )
+        self.algo_combo.grid(row=0, column=3, sticky="w", padx=5)
+
+        # Ligne 2: Options spécifiques au mode
+        # Frame pour options Screening (Sobol)
+        self.screening_frame = ttk.Frame(opt_frame)
+        self.screening_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
+
+        ttk.Label(self.screening_frame, text="Exposant Sobol (2^n):").pack(side="left", padx=5)
         self.sobol_exponent_var = tk.StringVar(value="5")
         self.sobol_exponent_var.trace_add("write", self.update_sobol_points_label)
+        self.sobol_exponent_entry = ttk.Entry(self.screening_frame, width=5, textvariable=self.sobol_exponent_var)
+        self.sobol_exponent_entry.pack(side="left", padx=2)
+        self.sobol_points_label = ttk.Label(self.screening_frame, text="= 32 points")
+        self.sobol_points_label.pack(side="left", padx=5)
 
-        self.sobol_exponent_entry = ttk.Entry(opt_frame, width=5, textvariable=self.sobol_exponent_var)
-        self.sobol_exponent_entry.grid(row=0, column=1, padx=2)
+        # Frame pour options SciPy
+        self.scipy_frame = ttk.Frame(opt_frame)
 
-        # Label dynamique pour afficher le nombre de points
-        self.sobol_points_label = ttk.Label(opt_frame, text="= 32 points")
-        self.sobol_points_label.grid(row=0, column=2, padx=5)
+        ttk.Label(self.scipy_frame, text="Itérations:").pack(side="left", padx=5)
+        self.scipy_iter_var = tk.StringVar(value="15")
+        self.scipy_iter_entry = ttk.Entry(self.scipy_frame, width=8, textvariable=self.scipy_iter_var)
+        self.scipy_iter_entry.pack(side="left", padx=5)
 
-        ttk.Button(opt_frame, text="▶️ Lancer Sobol",
-                  command=self.start_sobol).grid(row=0, column=3, padx=5)
+        # Ligne 3: Boutons d'action
+        button_frame = ttk.Frame(opt_frame)
+        button_frame.grid(row=2, column=0, columnspan=4, sticky="w", pady=5)
 
-        ttk.Button(opt_frame, text="⏹️ Arrêter",
-                  command=self.cancel_optimization).grid(row=0, column=4, padx=5)
+        self.btn_start = ttk.Button(button_frame, text="▶️ Lancer",
+                  command=self.start_optimization)
+        self.btn_start.pack(side="left", padx=5)
+
+        self.btn_cancel = ttk.Button(button_frame, text="⏹️ Arrêter",
+                  command=self.cancel_optimization, state="disabled")
+        self.btn_cancel.pack(side="left", padx=5)
+
+        # Initialiser l'affichage
+        self.on_mode_select(None)
 
         # Logs
         log_frame = ttk.LabelFrame(main_frame, text="📋 Logs", padding="5")
@@ -178,6 +224,22 @@ class OptimizerGUI:
             self.sobol_points_label.config(text=f"= {n_points} points", foreground="black")
         except ValueError:
             self.sobol_points_label.config(text="= Invalide", foreground="red")
+
+    def on_mode_select(self, event):
+        """Gère le changement de mode d'optimisation."""
+        # Cache les deux frames d'options
+        self.scipy_frame.grid_remove()
+        self.screening_frame.grid_remove()
+
+        mode = self.mode_var.get()
+        if mode == "Screening":
+            self.algo_combo.config(values=["Sobol DoE"])
+            self.algo_var.set("Sobol DoE")
+            self.screening_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
+        else:  # SciPy
+            self.algo_combo.config(values=self.scipy_algos)
+            self.algo_var.set(self.scipy_algos[0])
+            self.scipy_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
 
     def refresh_image_list(self):
         """Rafraîchit la liste des images."""
@@ -243,13 +305,17 @@ class OptimizerGUI:
         self.master.after(2000, lambda: self.progress_bar.config(value=0))
         self.master.after(2000, lambda: self.progress_label.config(text=""))
 
-    def start_sobol(self):
-        """Lance l'optimisation Sobol dans un thread."""
+    def start_optimization(self):
+        """Lance l'optimisation (Screening ou SciPy) dans un thread."""
         if not self.loaded_images:
             messagebox.showwarning("Attention", "Chargez d'abord les images !")
             return
 
-        threading.Thread(target=self.run_sobol, daemon=True).start()
+        mode = self.mode_var.get()
+        if mode == "Screening":
+            threading.Thread(target=self.run_sobol, daemon=True).start()
+        else:  # SciPy
+            threading.Thread(target=self.run_scipy, daemon=True).start()
 
     def run_sobol(self):
         """Exécute l'optimisation Sobol."""
@@ -365,6 +431,172 @@ class OptimizerGUI:
             import traceback
             self.log(traceback.format_exc())
             self.status_label.config(text="❌ Erreur screening")
+            self.progress_label.config(text="❌ Erreur")
+
+            # Réinitialiser après 2 secondes
+            self.master.after(2000, lambda: self.progress_bar.config(value=0))
+            self.master.after(2000, lambda: self.progress_label.config(text=""))
+
+    def run_scipy(self):
+        """Exécute l'optimisation SciPy."""
+        # Récupérer les paramètres SciPy
+        algorithm = self.algo_var.get()
+        try:
+            n_iterations = int(self.scipy_iter_var.get())
+            if n_iterations < 1:
+                self.log("❌ Le nombre d'itérations doit être >= 1")
+                return
+        except:
+            self.log("❌ Nombre d'itérations invalide")
+            return
+
+        self.cancellation_requested.clear()
+        self.status_label.config(text=f"🚀 Optimisation {algorithm} en cours...")
+        self.log(f"\n🚀 Démarrage SciPy avec {algorithm} ({n_iterations} itérations)")
+
+        # Récupérer les ranges actifs (même logique que Sobol)
+        active_ranges = {}
+        fixed_params = {'dilate_iter': 2}
+
+        for name, enabled_var in self.param_enabled_vars.items():
+            if enabled_var.get():
+                try:
+                    min_val = float(self.param_entries[name]['min'].get())
+                    max_val = float(self.param_entries[name]['max'].get())
+                    active_ranges[name] = (min_val, max_val)
+                except:
+                    self.log(f"❌ Valeurs invalides pour {name}")
+                    return
+            else:
+                # Paramètres désactivés = valeurs par défaut fixes
+                default_val = self.default_params[name][2]
+                if name == 'norm_kernel':
+                    fixed_params['norm_kernel'] = int(default_val) * 2 + 1
+                elif name == 'bin_block':
+                    fixed_params['bin_block_size'] = int(default_val) * 2 + 1
+                elif name == 'line_h':
+                    fixed_params['line_h_size'] = default_val
+                elif name == 'line_v':
+                    fixed_params['line_v_size'] = default_val
+                else:
+                    fixed_params[name] = default_val
+
+        if not active_ranges:
+            self.log("❌ Aucun paramètre actif à optimiser")
+            return
+
+        self.log(f"📊 Paramètres actifs: {list(active_ranges.keys())}")
+        self.log(f"🔒 Paramètres fixes: {list(fixed_params.keys())}")
+
+        # Convertir active_ranges en liste de bounds pour scipy
+        param_names = list(active_ranges.keys())
+        bounds = [active_ranges[name] for name in param_names]
+
+        # Fonction objectif pour SciPy
+        def objective_func(params_array):
+            """Fonction objectif à minimiser."""
+            # Convertir array en dict de paramètres
+            params_dict = dict(zip(param_names, params_array))
+
+            # Convertir noms courts en noms complets avec règles de transformation
+            full_params = fixed_params.copy()
+            for name, val in params_dict.items():
+                if name == 'norm_kernel':
+                    full_params['norm_kernel'] = int(val) * 2 + 1
+                elif name == 'bin_block':
+                    full_params['bin_block_size'] = int(val) * 2 + 1
+                elif name == 'line_h':
+                    full_params['line_h_size'] = val
+                elif name == 'line_v':
+                    full_params['line_v_size'] = val
+                else:
+                    full_params[name] = val
+
+            # Évaluer avec optimizer
+            result = optimizer.evaluate_pipeline(
+                self.loaded_images,
+                self.baseline_scores,
+                full_params,
+                cancellation_event=self.cancellation_requested
+            )
+
+            # SciPy minimise, donc on retourne -delta pour maximiser
+            return -result['tesseract_delta']
+
+        # Callback pour mise à jour GUI
+        def update_callback(msg):
+            self.master.after(0, self.log, msg)
+
+        # Initialiser barre de progression (indéterminée pour SciPy)
+        self.master.after(0, lambda: self.progress_bar.config(mode='indeterminate'))
+        self.master.after(0, lambda: self.progress_bar.start(10))
+        self.master.after(0, lambda: self.progress_label.config(text=f"Optimisation {algorithm}..."))
+
+        # Lancer optimisation SciPy
+        try:
+            best_result = scipy_optimizer.run_scipy_optimization(
+                objective_func=objective_func,
+                bounds=bounds,
+                algorithm=algorithm,
+                n_sobol_points=3,  # 3 points de départ
+                n_iterations=n_iterations,
+                update_callback=update_callback,
+                cancellation_event=self.cancellation_requested
+            )
+
+            # Arrêter la barre indéterminée
+            self.master.after(0, lambda: self.progress_bar.stop())
+            self.master.after(0, lambda: self.progress_bar.config(mode='determinate', value=100))
+
+            if best_result and best_result['x'] is not None:
+                # Convertir array en dict de paramètres
+                best_params_array = best_result['x']
+                best_params = dict(zip(param_names, best_params_array))
+
+                # Convertir en paramètres complets
+                full_params = fixed_params.copy()
+                for name, val in best_params.items():
+                    if name == 'norm_kernel':
+                        full_params['norm_kernel'] = int(val) * 2 + 1
+                    elif name == 'bin_block':
+                        full_params['bin_block_size'] = int(val) * 2 + 1
+                    elif name == 'line_h':
+                        full_params['line_h_size'] = val
+                    elif name == 'line_v':
+                        full_params['line_v_size'] = val
+                    else:
+                        full_params[name] = val
+
+                self.log(f"\n🏆 MEILLEURS PARAMÈTRES TROUVÉS:")
+                for key, val in full_params.items():
+                    self.log(f"   {key}: {val}")
+                self.log(f"   Score objectif: {best_result['fun']:.4f}")
+                self.log(f"   Delta Tesseract: {-best_result['fun']:.2f}%")
+                self.log(f"\n✅ Optimisation {algorithm} terminée")
+                self.status_label.config(text=f"✅ {algorithm} terminé!")
+                self.progress_label.config(text=f"✅ Optimisation terminée")
+
+                # Réinitialiser après 3 secondes
+                self.master.after(3000, lambda: self.progress_bar.config(value=0))
+                self.master.after(3000, lambda: self.progress_label.config(text=""))
+            else:
+                self.log("⚠️ Optimisation annulée ou aucun résultat trouvé")
+                self.status_label.config(text="⏹️ Optimisation annulée")
+                self.progress_label.config(text="⏹️ Annulé")
+
+                # Réinitialiser après 2 secondes
+                self.master.after(2000, lambda: self.progress_bar.config(value=0))
+                self.master.after(2000, lambda: self.progress_label.config(text=""))
+
+        except Exception as e:
+            # Arrêter la barre indéterminée
+            self.master.after(0, lambda: self.progress_bar.stop())
+            self.master.after(0, lambda: self.progress_bar.config(mode='determinate'))
+
+            self.log(f"❌ Erreur pendant l'optimisation: {e}")
+            import traceback
+            self.log(traceback.format_exc())
+            self.status_label.config(text="❌ Erreur optimisation")
             self.progress_label.config(text="❌ Erreur")
 
             # Réinitialiser après 2 secondes
