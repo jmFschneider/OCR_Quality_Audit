@@ -125,7 +125,9 @@ class OptimizerGUI:
         ttk.Label(opt_frame, text="Algorithme:").grid(row=0, column=2, sticky="w", padx=(15, 5))
 
         # Algorithmes par mode
-        self.scipy_algos = ['Nelder-Mead', 'Powell', 'CG', 'BFGS', 'L-BFGS-B', 'TNC', 'COBYLA', 'SLSQP']
+        # Avec bounds (contraints): L-BFGS-B, TNC, SLSQP
+        # Sans bounds (non contraints): Nelder-Mead, Powell, CG, BFGS, COBYLA
+        self.scipy_algos = ['L-BFGS-B', 'TNC', 'SLSQP', 'Nelder-Mead', 'Powell', 'CG', 'BFGS', 'COBYLA']
 
         self.algo_var = tk.StringVar(value="Sobol DoE")
         self.algo_combo = ttk.Combobox(
@@ -157,6 +159,10 @@ class OptimizerGUI:
         self.scipy_iter_var = tk.StringVar(value="15")
         self.scipy_iter_entry = ttk.Entry(self.scipy_frame, width=8, textvariable=self.scipy_iter_var)
         self.scipy_iter_entry.pack(side="left", padx=5)
+
+        # Info sur les algorithmes
+        ttk.Label(self.scipy_frame, text="ℹ️ Avec bounds: L-BFGS-B, TNC, SLSQP",
+                 font=("Arial", 8), foreground="gray").pack(side="left", padx=15)
 
         # Ligne 3: Boutons d'action
         button_frame = ttk.Frame(opt_frame)
@@ -463,6 +469,12 @@ class OptimizerGUI:
                 try:
                     min_val = float(self.param_entries[name]['min'].get())
                     max_val = float(self.param_entries[name]['max'].get())
+
+                    # Validation: min doit être < max
+                    if min_val >= max_val:
+                        self.log(f"❌ Pour {name}: min ({min_val}) doit être < max ({max_val})")
+                        return
+
                     active_ranges[name] = (min_val, max_val)
                 except:
                     self.log(f"❌ Valeurs invalides pour {name}")
