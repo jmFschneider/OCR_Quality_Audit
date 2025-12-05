@@ -346,44 +346,12 @@ def params_to_tuple(params):
 # SCREENING SOBOL (Design of Experiments)
 # ============================================================
 
-def _evaluate_single_point_worker(args):
-    """Worker pour évaluer un seul point (utilisé par le multiprocessing)."""
-    (idx, sample, param_names, param_ranges, fixed_params,
-     images, baseline_scores) = args
-
-    # Construire params dict
-    params = fixed_params.copy()
-    for i, param_name in enumerate(param_names):
-        val = sample[i]
-        if param_name == 'norm_kernel':
-            params['norm_kernel'] = int(val) * 2 + 1
-        elif param_name == 'bin_block':
-            params['bin_block_size'] = int(val) * 2 + 1
-        elif param_name == 'line_h':
-            params['line_h_size'] = int(val)
-        elif param_name == 'line_v':
-            params['line_v_size'] = int(val)
-        elif param_name in ['denoise_h', 'noise_threshold', 'bin_c']:
-            params[param_name] = val
-        else:
-            params[param_name] = val
-
-    # Évaluer le pipeline
-    avg_delta, avg_abs, avg_sharp, avg_cont = evaluate_pipeline(
-        images, baseline_scores, params, point_id=idx+1
-    )
-
-    return (idx, avg_delta, avg_abs, avg_sharp, avg_cont, params)
-
-
 def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
                        fixed_params, callback=None, cancellation_event=None,
-                       verbose_timing=True, enable_time_logging=True,
-                       points_per_batch=None):
-    """Screening Sobol pur (Design of Experiments) avec traitement parallèle des points.
+                       verbose_timing=True, enable_time_logging=True):
+    """Screening Sobol pur (Design of Experiments).
 
     Génère n_points avec une séquence Sobol et évalue tous sans optimisation.
-    Traite plusieurs points en parallèle pour maximiser l'utilisation CPU.
     Sauvegarde tous les résultats dans un CSV pour analyse ultérieure.
 
     Args:
@@ -398,14 +366,11 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
         cancellation_event: threading.Event() pour annulation (optionnel)
         verbose_timing: DÉPRÉCIÉ - Les temps sont maintenant sauvegardés dans un CSV
         enable_time_logging: Si True, sauvegarde les temps dans un fichier CSV
-        points_per_batch: Nombre de points à traiter en parallèle (None = auto)
 
     Returns:
         Tuple (best_params_dict, csv_filename)
     """
     from scipy.stats import qmc
-    from concurrent.futures import ThreadPoolExecutor
-    import multiprocessing as mp
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_filename = f"screening_sobol_{n_points}pts_{timestamp}.csv"
@@ -451,80 +416,59 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
 
     print(f"📄 Fichier de résultats: {csv_filename}")
 
-    # Calculer le nombre de points à traiter en parallèle
-    if points_per_batch is None:
-        # Auto: nombre de cores / nombre d'images par point
-        points_per_batch = max(1, mp.cpu_count() // len(images))
-
-    print(f"⚡ Traitement par batches: {points_per_batch} points en parallèle")
-    print(f"💻 Utilisation CPU estimée: {points_per_batch * len(images)} workers max")
-
-    # Évaluer chaque point (par batches parallèles)
+    # Évaluer chaque point
     best_score = 0
     best_params = None
 
     csv_buffer = []
-    CSV_BATCH_SIZE = 50  # Écriture par lots pour performance
+    BATCH_SIZE = 50  # Écriture par lots pour performance
 
-    # Préparer les arguments pour tous les points
-    all_point_args = [
-        (idx, sample, param_names, param_ranges, fixed_params, images, baseline_scores)
-        for idx, sample in enumerate(scaled_samples)
-    ]
-
-    # Traiter par batches
-    for batch_start in range(0, len(all_point_args), points_per_batch):
+    for idx, sample in enumerate(scaled_samples):
         # Vérifier annulation
         if cancellation_event and cancellation_event.is_set():
             print("⚠️ Screening annulé par l'utilisateur")
             break
 
-        batch_end = min(batch_start + points_per_batch, len(all_point_args))
-        batch_args = all_point_args[batch_start:batch_end]
-
-        # Traiter ce batch en parallèle
-        with ThreadPoolExecutor(max_workers=points_per_batch) as executor:
-            batch_results = list(executor.map(_evaluate_single_point_worker, batch_args))
-
-        # Traiter les résultats du batch
-        for idx, avg_delta, avg_abs, avg_sharp, avg_cont, params in batch_results:
-            # Ajouter au buffer CSV
-            row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
-            for p in param_names:
-                if p == 'norm_kernel':
-                    row_data.append(params.get('norm_kernel'))
-                elif p == 'bin_block':
-                    row_data.append(params.get('bin_block_size'))
-                elif p == 'line_h':
-                    row_data.append(params.get('line_h_size'))
-                elif p == 'line_v':
-                    row_data.append(params.get('line_v_size'))
-                else:
-                    row_data.append(params.get(p))
-
-            csv_buffer.append(row_data)
-
-            # Suivi du meilleur
-            if avg_delta > best_score:
-                best_score = avg_delta
-                best_params = params.copy()
-                print(f"🔥 Point {idx+1}/{n_points}: Nouveau meilleur gain = {avg_delta:.2f}%")
+        # Construire params dict
+        params = fixed_params.copy()
+        for i, param_name in enumerate(param_names):
+            val = sample[i]
+            if param_name == 'norm_kernel':
+                params['norm_kernel'] = int(val) * 2 + 1
+            elif param_name == 'bin_block':
+                params['bin_block_size'] = int(val) * 2 + 1
+            elif param_name == 'line_h':
+                params['line_h_size'] = int(val)
+            elif param_name == 'line_v':
+                params['line_v_size'] = int(val)
+            elif param_name in ['denoise_h', 'noise_threshold', 'bin_c']:
+                params[param_name] = val
             else:
-                if (idx + 1) % 50 == 0:  # Log tous les 50 points
-                    print(f"   Point {idx+1}/{n_points}: Gain = {avg_delta:.2f}%")
+                params[param_name] = val
 
-            # Callback optionnel pour mise à jour GUI
-            if callback:
-                scores_dict = {
-                    'tesseract_delta': avg_delta,
-                    'tesseract': avg_abs,
-                    'nettete': avg_sharp,
-                    'contraste': avg_cont
-                }
-                callback(idx, scores_dict, params)
+        # Évaluer (les temps sont sauvegardés dans le fichier CSV si enable_time_logging=True)
+        avg_delta, avg_abs, avg_sharp, avg_cont = evaluate_pipeline(
+            images, baseline_scores, params, point_id=idx+1
+        )
+
+        # Ajouter au buffer CSV
+        row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
+        for p in param_names:
+            if p == 'norm_kernel':
+                row_data.append(params.get('norm_kernel'))
+            elif p == 'bin_block':
+                row_data.append(params.get('bin_block_size'))
+            elif p == 'line_h':
+                row_data.append(params.get('line_h_size'))
+            elif p == 'line_v':
+                row_data.append(params.get('line_v_size'))
+            else:
+                row_data.append(params.get(p))
+
+        csv_buffer.append(row_data)
 
         # Écriture par lots (Batching pour performance)
-        if len(csv_buffer) >= CSV_BATCH_SIZE:
+        if len(csv_buffer) >= BATCH_SIZE:
             try:
                 with open(csv_filename, mode='a', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f, delimiter=';')
@@ -532,6 +476,25 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
                 csv_buffer = []
             except Exception as e:
                 print(f"Erreur écriture CSV batch: {e}")
+
+        # Suivi du meilleur
+        if avg_delta > best_score:
+            best_score = avg_delta
+            best_params = params.copy()
+            print(f"🔥 Point {idx+1}/{n_points}: Nouveau meilleur gain = {avg_delta:.2f}%")
+        else:
+            if (idx + 1) % 50 == 0:  # Log tous les 50 points
+                print(f"   Point {idx+1}/{n_points}: Gain = {avg_delta:.2f}%")
+
+        # Callback optionnel pour mise à jour GUI
+        if callback:
+            scores_dict = {
+                'tesseract_delta': avg_delta,
+                'tesseract': avg_abs,
+                'nettete': avg_sharp,
+                'contraste': avg_cont
+            }
+            callback(idx, scores_dict, params)
 
     # Vider le reste du buffer
     if csv_buffer:
