@@ -129,6 +129,19 @@ class OptimizerGUI:
         # Sans bounds (non contraints): Nelder-Mead, Powell, CG, BFGS, COBYLA
         self.scipy_algos = ['L-BFGS-B', 'TNC', 'SLSQP', 'Nelder-Mead', 'Powell', 'CG', 'BFGS', 'COBYLA']
 
+        # Descriptions des algorithmes
+        self.algo_descriptions = {
+            'Sobol DoE': 'Design of Experiments - Exploration exhaustive de l\'espace',
+            'L-BFGS-B': '✓ Bounds | Quasi-Newton | Mémoire limitée | Efficace haute dimension',
+            'TNC': '✓ Bounds | Newton tronqué | Robuste | Bon pour problèmes bruités',
+            'SLSQP': '✓ Bounds | Programmation quadratique | Support contraintes linéaires',
+            'Nelder-Mead': '✗ Bounds | Simplexe | Sans gradient | Robuste mais lent',
+            'Powell': '✗ Bounds | Direction conjuguée | Sans gradient | Rapide localement',
+            'CG': '✗ Bounds | Gradient conjugué | Nécessite gradient | Efficace',
+            'BFGS': '✗ Bounds | Quasi-Newton | Nécessite gradient | Très efficace',
+            'COBYLA': '✗ Bounds | Approximation linéaire | Sans gradient | Support contraintes'
+        }
+
         self.algo_var = tk.StringVar(value="Sobol DoE")
         self.algo_combo = ttk.Combobox(
             opt_frame,
@@ -138,6 +151,16 @@ class OptimizerGUI:
             values=["Sobol DoE"]
         )
         self.algo_combo.grid(row=0, column=3, sticky="w", padx=5)
+        self.algo_combo.bind("<<ComboboxSelected>>", self.on_algo_select)
+
+        # Label pour afficher les caractéristiques de l'algorithme
+        self.algo_info_label = ttk.Label(
+            opt_frame,
+            text=self.algo_descriptions['Sobol DoE'],
+            font=("Arial", 9),
+            foreground="#555555"
+        )
+        self.algo_info_label.grid(row=0, column=4, sticky="w", padx=10)
 
         # Ligne 2: Options spécifiques au mode
         # Frame pour options Screening (Sobol)
@@ -159,10 +182,6 @@ class OptimizerGUI:
         self.scipy_iter_var = tk.StringVar(value="15")
         self.scipy_iter_entry = ttk.Entry(self.scipy_frame, width=8, textvariable=self.scipy_iter_var)
         self.scipy_iter_entry.pack(side="left", padx=5)
-
-        # Info sur les algorithmes
-        ttk.Label(self.scipy_frame, text="ℹ️ Avec bounds: L-BFGS-B, TNC, SLSQP",
-                 font=("Arial", 8), foreground="gray").pack(side="left", padx=15)
 
         # Ligne 3: Boutons d'action
         button_frame = ttk.Frame(opt_frame)
@@ -246,6 +265,17 @@ class OptimizerGUI:
             self.algo_combo.config(values=self.scipy_algos)
             self.algo_var.set(self.scipy_algos[0])
             self.scipy_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=5)
+
+        # Mettre à jour la description de l'algorithme
+        self.on_algo_select(None)
+
+    def on_algo_select(self, event):
+        """Met à jour la description de l'algorithme sélectionné."""
+        algo = self.algo_var.get()
+        if algo in self.algo_descriptions:
+            self.algo_info_label.config(text=self.algo_descriptions[algo])
+        else:
+            self.algo_info_label.config(text="")
 
     def refresh_image_list(self):
         """Rafraîchit la liste des images."""
