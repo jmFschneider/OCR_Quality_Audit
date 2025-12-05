@@ -88,22 +88,55 @@ class OptimizerGUI:
         params_frame = ttk.LabelFrame(main_frame, text="⚙️ Paramètres", padding="5")
         params_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
 
+        # En-têtes de colonnes
+        ttk.Label(params_frame, text="Actif", font=("Arial", 9, "bold")).grid(row=0, column=0, padx=2)
+        ttk.Label(params_frame, text="Paramètre", font=("Arial", 9, "bold")).grid(row=0, column=1, sticky=tk.W, padx=2)
+        ttk.Label(params_frame, text="Min", font=("Arial", 9, "bold")).grid(row=0, column=2, padx=2)
+        ttk.Label(params_frame, text="Max", font=("Arial", 9, "bold")).grid(row=0, column=3, padx=2)
+        ttk.Label(params_frame, text="Valeur fixe", font=("Arial", 9, "bold")).grid(row=0, column=4, padx=2)
+
+        # Info sur l'utilisation
+        info_label = ttk.Label(
+            params_frame,
+            text="ℹ️ Coché = optimise entre Min-Max | Décoché = utilise Valeur fixe",
+            font=("Arial", 8),
+            foreground="gray"
+        )
+        info_label.grid(row=0, column=5, sticky="w", padx=10)
+
         self.param_entries = {}
-        for row, (name, (min_val, max_val, default)) in enumerate(self.default_params.items()):
-            ttk.Checkbutton(params_frame, variable=self.param_enabled_vars[name]).grid(row=row, column=0)
+        for idx, (name, (min_val, max_val, default)) in enumerate(self.default_params.items()):
+            row = idx + 1  # +1 pour l'en-tête
+
+            # Checkbox avec callback pour gérer l'état des champs
+            checkbox = ttk.Checkbutton(
+                params_frame,
+                variable=self.param_enabled_vars[name],
+                command=lambda n=name: self.toggle_param_fields(n)
+            )
+            checkbox.grid(row=row, column=0)
             ttk.Label(params_frame, text=name).grid(row=row, column=1, sticky=tk.W)
-            
+
             # Min
             min_entry = ttk.Entry(params_frame, width=8)
             min_entry.insert(0, str(min_val))
             min_entry.grid(row=row, column=2, padx=2)
-            
+
             # Max
             max_entry = ttk.Entry(params_frame, width=8)
             max_entry.insert(0, str(max_val))
             max_entry.grid(row=row, column=3, padx=2)
 
-            self.param_entries[name] = {'min': min_entry, 'max': max_entry}
+            # Valeur fixe (utilisée quand le paramètre est décoché)
+            fixed_entry = ttk.Entry(params_frame, width=8)
+            fixed_entry.insert(0, str(default))
+            fixed_entry.grid(row=row, column=4, padx=2)
+
+            self.param_entries[name] = {'min': min_entry, 'max': max_entry, 'fixed': fixed_entry}
+
+        # Initialiser l'état des champs selon les valeurs par défaut (tous cochés)
+        for name in self.default_params:
+            self.toggle_param_fields(name)
 
         # Boutons optimisation
         opt_frame = ttk.LabelFrame(main_frame, text="🚀 Optimisation", padding="5")
@@ -183,6 +216,18 @@ class OptimizerGUI:
         self.scipy_iter_entry = ttk.Entry(self.scipy_frame, width=8, textvariable=self.scipy_iter_var)
         self.scipy_iter_entry.pack(side="left", padx=5)
 
+        ttk.Label(self.scipy_frame, text="Log tous les:").pack(side="left", padx=(15, 5))
+        self.scipy_log_freq_var = tk.StringVar(value="10")
+        self.scipy_log_freq_combo = ttk.Combobox(
+            self.scipy_frame,
+            textvariable=self.scipy_log_freq_var,
+            state="readonly",
+            width=8,
+            values=["1", "5", "10", "20", "50", "100"]
+        )
+        self.scipy_log_freq_combo.pack(side="left", padx=2)
+        ttk.Label(self.scipy_frame, text="points").pack(side="left", padx=2)
+
         # Ligne 3: Boutons d'action
         button_frame = ttk.Frame(opt_frame)
         button_frame.grid(row=2, column=0, columnspan=4, sticky="w", pady=5)
@@ -237,6 +282,22 @@ class OptimizerGUI:
         self.log_text.insert(tk.END, f"{message}\n")
         self.log_text.see(tk.END)
         self.log_text.update()
+
+    def toggle_param_fields(self, param_name):
+        """Active/désactive les champs Min/Max/Fixed selon l'état de la checkbox."""
+        is_enabled = self.param_enabled_vars[param_name].get()
+        entries = self.param_entries[param_name]
+
+        if is_enabled:
+            # Paramètre actif: Min/Max actifs, Fixed grisé
+            entries['min'].config(state='normal')
+            entries['max'].config(state='normal')
+            entries['fixed'].config(state='disabled')
+        else:
+            # Paramètre inactif: Min/Max grisés, Fixed actif
+            entries['min'].config(state='disabled')
+            entries['max'].config(state='disabled')
+            entries['fixed'].config(state='normal')
 
     def update_sobol_points_label(self, *args):
         """Met à jour le label affichant le nombre de points Sobol (2^n)."""
@@ -366,6 +427,11 @@ class OptimizerGUI:
             return
 
         self.cancellation_requested.clear()
+
+        # Activer/désactiver les boutons
+        self.btn_start.config(state="disabled")
+        self.btn_cancel.config(state="normal")
+
         self.status_label.config(text=f"🚀 Screening Sobol en cours (2^{exponent} = {n_points} points)...")
         self.log(f"\n🚀 Démarrage Sobol avec 2^{exponent} = {n_points} points")
 
@@ -383,18 +449,23 @@ class OptimizerGUI:
                     self.log(f"❌ Valeurs invalides pour {name}")
                     return
             else:
-                # Paramètres désactivés = valeurs par défaut fixes
-                default_val = self.default_params[name][2]
+                # Paramètres désactivés = valeurs fixes définies par l'utilisateur
+                try:
+                    fixed_val = float(self.param_entries[name]['fixed'].get())
+                except:
+                    self.log(f"❌ Valeur fixe invalide pour {name}")
+                    return
+
                 if name == 'norm_kernel':
-                    fixed_params['norm_kernel'] = int(default_val) * 2 + 1
+                    fixed_params['norm_kernel'] = int(fixed_val) * 2 + 1
                 elif name == 'bin_block':
-                    fixed_params['bin_block_size'] = int(default_val) * 2 + 1
+                    fixed_params['bin_block_size'] = int(fixed_val) * 2 + 1
                 elif name == 'line_h':
-                    fixed_params['line_h_size'] = default_val
+                    fixed_params['line_h_size'] = int(fixed_val)
                 elif name == 'line_v':
-                    fixed_params['line_v_size'] = default_val
+                    fixed_params['line_v_size'] = int(fixed_val)
                 else:
-                    fixed_params[name] = default_val
+                    fixed_params[name] = fixed_val
 
         if not active_ranges:
             self.log("❌ Aucun paramètre actif à optimiser")
@@ -473,6 +544,11 @@ class OptimizerGUI:
             self.master.after(2000, lambda: self.progress_bar.config(value=0))
             self.master.after(2000, lambda: self.progress_label.config(text=""))
 
+        finally:
+            # Réactiver les boutons dans tous les cas
+            self.btn_start.config(state="normal")
+            self.btn_cancel.config(state="disabled")
+
     def run_scipy(self):
         """Exécute l'optimisation SciPy."""
         # Récupérer les paramètres SciPy
@@ -486,7 +562,17 @@ class OptimizerGUI:
             self.log("❌ Nombre d'itérations invalide")
             return
 
+        try:
+            log_frequency = int(self.scipy_log_freq_var.get())
+        except:
+            log_frequency = 10  # Valeur par défaut
+
         self.cancellation_requested.clear()
+
+        # Activer/désactiver les boutons
+        self.btn_start.config(state="disabled")
+        self.btn_cancel.config(state="normal")
+
         self.status_label.config(text=f"🚀 Optimisation {algorithm} en cours...")
         self.log(f"\n🚀 Démarrage SciPy avec {algorithm} ({n_iterations} itérations)")
 
@@ -510,18 +596,23 @@ class OptimizerGUI:
                     self.log(f"❌ Valeurs invalides pour {name}")
                     return
             else:
-                # Paramètres désactivés = valeurs par défaut fixes
-                default_val = self.default_params[name][2]
+                # Paramètres désactivés = valeurs fixes définies par l'utilisateur
+                try:
+                    fixed_val = float(self.param_entries[name]['fixed'].get())
+                except:
+                    self.log(f"❌ Valeur fixe invalide pour {name}")
+                    return
+
                 if name == 'norm_kernel':
-                    fixed_params['norm_kernel'] = int(default_val) * 2 + 1
+                    fixed_params['norm_kernel'] = int(fixed_val) * 2 + 1
                 elif name == 'bin_block':
-                    fixed_params['bin_block_size'] = int(default_val) * 2 + 1
+                    fixed_params['bin_block_size'] = int(fixed_val) * 2 + 1
                 elif name == 'line_h':
-                    fixed_params['line_h_size'] = default_val
+                    fixed_params['line_h_size'] = int(fixed_val)
                 elif name == 'line_v':
-                    fixed_params['line_v_size'] = default_val
+                    fixed_params['line_v_size'] = int(fixed_val)
                 else:
-                    fixed_params[name] = default_val
+                    fixed_params[name] = fixed_val
 
         if not active_ranges:
             self.log("❌ Aucun paramètre actif à optimiser")
@@ -529,14 +620,25 @@ class OptimizerGUI:
 
         self.log(f"📊 Paramètres actifs: {list(active_ranges.keys())}")
         self.log(f"🔒 Paramètres fixes: {list(fixed_params.keys())}")
+        self.log(f"🎯 Objectif: MAXIMISER le Delta Tesseract (amélioration vs baseline)")
+        self.log(f"📈 Plus le delta est élevé, meilleure est la qualité OCR")
 
         # Convertir active_ranges en liste de bounds pour scipy
         param_names = list(active_ranges.keys())
         bounds = [active_ranges[name] for name in param_names]
 
+        # Variables pour le suivi de l'optimisation
+        eval_count = [0]  # Liste pour mutabilité dans la closure
+        best_score = [float('-inf')]  # Meilleur delta trouvé (à maximiser)
+        best_metrics = [None]  # Stocker toutes les métriques du meilleur
+
         # Fonction objectif pour SciPy
         def objective_func(params_array):
             """Fonction objectif à minimiser."""
+            # Incrémenter le compteur d'évaluations
+            eval_count[0] += 1
+            current_eval = eval_count[0]
+
             # Convertir array en dict de paramètres
             params_dict = dict(zip(param_names, params_array))
 
@@ -548,22 +650,52 @@ class OptimizerGUI:
                 elif name == 'bin_block':
                     full_params['bin_block_size'] = int(val) * 2 + 1
                 elif name == 'line_h':
-                    full_params['line_h_size'] = val
+                    full_params['line_h_size'] = int(val)
                 elif name == 'line_v':
-                    full_params['line_v_size'] = val
+                    full_params['line_v_size'] = int(val)
                 else:
                     full_params[name] = val
 
             # Évaluer avec optimizer
-            result = optimizer.evaluate_pipeline(
+            # evaluate_pipeline retourne un tuple: (avg_delta, avg_abs, avg_sharp, avg_cont)
+            avg_delta, avg_abs, avg_sharp, avg_cont = optimizer.evaluate_pipeline(
                 self.loaded_images,
                 self.baseline_scores,
-                full_params,
-                cancellation_event=self.cancellation_requested
+                full_params
             )
 
+            # Déterminer si c'est une amélioration
+            is_improvement = False
+            if avg_delta > best_score[0]:
+                is_improvement = True
+                best_score[0] = avg_delta
+                best_metrics[0] = {
+                    'delta': avg_delta,
+                    'tesseract': avg_abs,
+                    'sharpness': avg_sharp,
+                    'contrast': avg_cont,
+                    'params': params_dict.copy()
+                }
+
+            # Logger tous les X points OU si amélioration trouvée
+            should_log = (current_eval % log_frequency == 0 or current_eval == 1 or is_improvement)
+
+            if should_log:
+                # Indicateur de tendance
+                trend = "🆕 MEILLEUR!" if is_improvement else "📊"
+
+                msg = (f"{trend} [Eval {current_eval}] Delta: {avg_delta:+.2f}% | "
+                       f"Tess: {avg_abs:.1f}% | Sharp: {avg_sharp:.0f} | Cont: {avg_cont:.0f}")
+                self.master.after(0, self.log, msg)
+
+                # Afficher le meilleur trouvé jusqu'à présent (sauf si c'est lui-même)
+                if best_metrics[0] and not is_improvement:
+                    best_msg = (f"   ⭐ Meilleur actuel: Delta={best_metrics[0]['delta']:+.2f}% | "
+                               f"Tess={best_metrics[0]['tesseract']:.1f}%")
+                    self.master.after(0, self.log, best_msg)
+
             # SciPy minimise, donc on retourne -delta pour maximiser
-            return -result['tesseract_delta']
+            return -avg_delta
 
         # Callback pour mise à jour GUI
         def update_callback(msg):
@@ -603,17 +735,23 @@ class OptimizerGUI:
                     elif name == 'bin_block':
                         full_params['bin_block_size'] = int(val) * 2 + 1
                     elif name == 'line_h':
-                        full_params['line_h_size'] = val
+                        full_params['line_h_size'] = int(val)
                     elif name == 'line_v':
-                        full_params['line_v_size'] = val
+                        full_params['line_v_size'] = int(val)
                     else:
                         full_params[name] = val
 
-                self.log(f"\n🏆 MEILLEURS PARAMÈTRES TROUVÉS:")
+                self.log(f"\n🏆 MEILLEURS PARAMÈTRES TROUVÉS ({eval_count[0]} évaluations):")
                 for key, val in full_params.items():
                     self.log(f"   {key}: {val}")
-                self.log(f"   Score objectif: {best_result['fun']:.4f}")
-                self.log(f"   Delta Tesseract: {-best_result['fun']:.2f}%")
+                self.log(f"\n📊 MÉTRIQUES:")
+                if best_metrics[0]:
+                    self.log(f"   Delta Tesseract: {best_metrics[0]['delta']:+.2f}%")
+                    self.log(f"   Score Tesseract: {best_metrics[0]['tesseract']:.2f}%")
+                    self.log(f"   Netteté: {best_metrics[0]['sharpness']:.0f}")
+                    self.log(f"   Contraste: {best_metrics[0]['contrast']:.0f}")
+                else:
+                    self.log(f"   Delta Tesseract: {-best_result['fun']:.2f}%")
                 self.log(f"\n✅ Optimisation {algorithm} terminée")
                 self.status_label.config(text=f"✅ {algorithm} terminé!")
                 self.progress_label.config(text=f"✅ Optimisation terminée")
@@ -622,7 +760,9 @@ class OptimizerGUI:
                 self.master.after(3000, lambda: self.progress_bar.config(value=0))
                 self.master.after(3000, lambda: self.progress_label.config(text=""))
             else:
-                self.log("⚠️ Optimisation annulée ou aucun résultat trouvé")
+                self.log(f"⚠️ Optimisation annulée ou aucun résultat trouvé ({eval_count[0]} évaluations)")
+                if best_metrics[0]:
+                    self.log(f"   Meilleur delta avant annulation: {best_metrics[0]['delta']:+.2f}%")
                 self.status_label.config(text="⏹️ Optimisation annulée")
                 self.progress_label.config(text="⏹️ Annulé")
 
@@ -635,15 +775,22 @@ class OptimizerGUI:
             self.master.after(0, lambda: self.progress_bar.stop())
             self.master.after(0, lambda: self.progress_bar.config(mode='determinate'))
 
-            self.log(f"❌ Erreur pendant l'optimisation: {e}")
+            self.log(f"❌ Erreur pendant l'optimisation ({eval_count[0]} évaluations): {e}")
             import traceback
             self.log(traceback.format_exc())
+            if best_metrics[0]:
+                self.log(f"   Meilleur delta avant erreur: {best_metrics[0]['delta']:+.2f}%")
             self.status_label.config(text="❌ Erreur optimisation")
             self.progress_label.config(text="❌ Erreur")
 
             # Réinitialiser après 2 secondes
             self.master.after(2000, lambda: self.progress_bar.config(value=0))
             self.master.after(2000, lambda: self.progress_label.config(text=""))
+
+        finally:
+            # Réactiver les boutons dans tous les cas
+            self.btn_start.config(state="normal")
+            self.btn_cancel.config(state="disabled")
 
     def cancel_optimization(self):
         """Annule l'optimisation en cours."""
