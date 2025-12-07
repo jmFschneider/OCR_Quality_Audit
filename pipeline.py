@@ -8,6 +8,34 @@ Moteur OCR: Tesseract (excellent pour le français, stable avec CUDA)
 import cv2
 import numpy as np
 import pytesseract
+import shutil
+import os
+import sys
+
+# ============================================================
+# CONFIGURATION TESSERACT
+# ============================================================
+
+# Vérification auto du path Tesseract
+if not shutil.which("tesseract"):
+    # Tesseract n'est pas dans le PATH
+    possible_paths = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        r"/usr/bin/tesseract",
+        r"/usr/local/bin/tesseract"
+    ]
+    
+    found_tesseract = False
+    for p in possible_paths:
+        if os.path.exists(p):
+            pytesseract.pytesseract.tesseract_cmd = p
+            print(f"📝 Tesseract trouvé: {p}")
+            found_tesseract = True
+            break
+            
+    if not found_tesseract:
+        print("⚠️ Tesseract non trouvé ! Assurez-vous qu'il est installé et dans le PATH.")
 
 # ============================================================
 # DÉTECTION CUDA
@@ -309,8 +337,67 @@ def get_tesseract_score(image):
                 continue
 
         return sum(confs) / len(confs) if confs else 0.0
-    except Exception:
+    except Exception as e:
+        print(f"❌ Erreur Tesseract: {e}")
         return 0.0
+
+def get_cnr_quality(image):
+    """
+    Calcule le Contrast-to-Noise Ratio (CNR) spécifique aux documents.
+    Idéal pour évaluer la qualité pour des IA visuelles (Gemini, etc.)
+    qui préfèrent un fond lisse et un bon contraste, sans binarisation stricte.
+    
+    Formula: (Mean_BG - Mean_FG) / Std_BG
+    
+    Returns:
+        float: Score CNR (plus c'est haut, mieux c'est). 
+               Typiquement: < 2 (Mauvais), 2-5 (Moyen), > 5 (Excellent)
+    """
+    try:
+        cpu_img = _to_gray_uint8(image)
+        if cpu_img is None:
+            return 0.0
+
+        # 1. Séparation grossière Texte/Fond via Otsu (juste pour l'analyse)
+        # On utilise THRESH_BINARY_INV pour avoir Texte=Blanc(255), Fond=Noir(0) dans le masque
+        thresh_val, mask_fg = cv2.threshold(cpu_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        mask_bg = cv2.bitwise_not(mask_fg)
+
+        # Vérification sécurité (si image toute blanche ou toute noire)
+        n_fg = cv2.countNonZero(mask_fg)
+        n_bg = cv2.countNonZero(mask_bg)
+        
+        if n_fg == 0 or n_bg == 0:
+            return 0.0
+
+        # 2. Calcul des statistiques
+        # MeanStdDev calcule moy et std pour les pixels où le masque != 0
+        mean_bg, std_bg = cv2.meanStdDev(cpu_img, mask=mask_bg)
+        mean_fg, _ = cv2.meanStdDev(cpu_img, mask=mask_fg)
+
+        m_bg = mean_bg[0][0]
+        s_bg = std_bg[0][0]
+        m_fg = mean_fg[0][0]
+
+        # 3. Calcul du score
+        contrast = m_bg - m_fg
+        
+        # Si le contraste est inversé ou nul (texte plus clair que fond), c'est illisible
+        if contrast <= 5:
+            return 0.0
+            
+        # Pénalité bruit : on ajoute un epsilon pour éviter division par zéro
+        # Si le fond est parfaitement uni (std=0), le score explose (ce qui est bien)
+        noise = s_bg + 0.1 
+        
+        cnr = contrast / noise
+        
+        return float(cnr)
+        
+    except Exception as e:
+        print(f"⚠️ Erreur calcul CNR: {e}")
+        return 0.0
+
 
 def evaluer_toutes_metriques(image):
     """Calcule toutes les métriques d'une image avec chronométrage."""
@@ -321,19 +408,20 @@ def evaluer_toutes_metriques(image):
     tess = get_tesseract_score(image)
     t_tess = (time.time() - t0) * 1000
 
-    # ---- SHARPNESS ----
+    # ---- CNR (Gemini Quality) ----
+    # Remplaçons Sharpness/Contrast génériques par CNR et Sharpness
     t0 = time.time()
+    cnr = get_cnr_quality(image)
+    # On garde sharpness car utile pour détecter le flou excessif
     sharp = get_sharpness(image)
-    t_sharp = (time.time() - t0) * 1000
+    t_metrics = (time.time() - t0) * 1000
 
-    # ---- CONTRAST ----
-    t0 = time.time()
-    cont = get_contrast(image)
-    t_cont = (time.time() - t0) * 1000
-
+    # On retourne un tuple compatible avec l'existant, mais on remplace 'Contrast' par 'CNR'
+    # Structure: (tess, sharp, cnr, t_tess, t_metrics, 0)
+    # Le dernier temps est mis à 0 pour garder la signature
     return (
-        tess, sharp, cont,
-        t_tess, t_sharp, t_cont,
+        tess, sharp, cnr,
+        t_tess, t_metrics, 0,
     )
 
 
@@ -372,3 +460,92 @@ def evaluer_toutes_metriques_batch(images, max_workers=None, verbose=False):
         print(f"✅ Batch terminé en {t_total:.0f}ms ({t_total/len(images):.0f}ms/image)")
 
     return results
+
+
+# ============================================================
+# NOUVEAU PIPELINE: HAUTE FIDÉLITÉ (Blur + CLAHE)
+# ============================================================
+
+def pipeline_blur_clahe(image, params):
+    """
+    Pipeline 'Haute Fidélité' optimisé pour Gemini.
+    Privilégie la conservation de la texture (niveaux de gris) vs binarisation.
+    
+    Args:
+        image: Image source (numpy array uint8)
+        params: Dict contenant:
+            - inp_line_h (int): Largeur kernel ligne horizontale (ex: 40)
+            - inp_line_v (int): Hauteur kernel ligne verticale (ex: 40)
+            - denoise_h (float): Force du denoising NLMeans (ex: 12.0)
+            - bg_dilate (int): Taille kernel dilatation fond (ex: 7)
+            - bg_blur (int): Taille kernel median blur fond (ex: 21)
+            - clahe_clip (float): Clip limit CLAHE (ex: 2.0)
+            - clahe_tile (int): Taille grille CLAHE (ex: 8)
+            
+    Returns:
+        Image traitée (numpy array uint8)
+    """
+    # 0. S'assurer qu'on est sur CPU (Inpainting et certains algos complexes)
+    cpu_img = _to_gray_uint8(image)
+    if cpu_img is None:
+        return None
+
+    # --- ÉTAPE A : Suppression des Lignes par "Inpainting" ---
+    # Détection
+    # Note: On utilise des valeurs fixes pour le threshold ici pour simplifier, 
+    # ou on pourrait ajouter des params si nécessaire. OTSU est généralement bon.
+    _, thresh = cv2.threshold(cpu_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Kernel Horizontal
+    h_size = params.get('inp_line_h', 40)
+    if h_size < 1: h_size = 1
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
+    remove_h = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, h_kernel, iterations=2)
+    
+    # Kernel Vertical
+    v_size = params.get('inp_line_v', 40)
+    if v_size < 1: v_size = 1
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
+    remove_v = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel, iterations=2)
+    
+    # Masque combiné + Dilatation
+    mask_lines = cv2.add(remove_h, remove_v)
+    mask_lines = cv2.dilate(mask_lines, np.ones((3,3), np.uint8), iterations=1)
+    
+    # Inpainting (Lent mais qualitatif)
+    # Radius 3 est standard. TELEA est souvent plus rapide/stable que NS.
+    img_no_lines = cv2.inpaint(cpu_img, mask_lines, 3, cv2.INPAINT_TELEA)
+    
+    # --- ÉTAPE B : Denoising (FastNLMeans) ---
+    h_val = params.get('denoise_h', 12.0)
+    # Template 7, Search 21 sont des standards
+    img_denoised = cv2.fastNlMeansDenoising(img_no_lines, None, h=h_val, 
+                                            templateWindowSize=7, searchWindowSize=21)
+                                            
+    # --- ÉTAPE C : Normalisation par Division (Preservation Grayscale) ---
+    # 1. Estimation du fond
+    dil_k = params.get('bg_dilate', 7)
+    if dil_k % 2 == 0: dil_k += 1
+    dilated_img = cv2.dilate(img_denoised, np.ones((dil_k, dil_k), np.uint8))
+    
+    blur_k = params.get('bg_blur', 21)
+    if blur_k % 2 == 0: blur_k += 1
+    bg_img = cv2.medianBlur(dilated_img, blur_k)
+    
+    # 2. Différence (Fond blanc - Différence)
+    # Cela permet d'avoir le texte (sombre) sur fond blanc (255)
+    diff_img = 255 - cv2.absdiff(img_denoised, bg_img)
+    
+    # 3. Normalisation (Étirement histogramme)
+    norm_img = cv2.normalize(diff_img, None, alpha=0, beta=255, 
+                             norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+                             
+    # --- ÉTAPE D : CLAHE Final ---
+    clip = params.get('clahe_clip', 2.0)
+    tile = params.get('clahe_tile', 8)
+    if tile < 1: tile = 8
+    
+    clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(tile, tile))
+    result = clahe.apply(norm_img)
+    
+    return result

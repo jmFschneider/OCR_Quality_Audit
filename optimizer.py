@@ -109,32 +109,38 @@ def process_image_fast(args):
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
     try:
-        img, params, baseline_score = args
+        if len(args) == 4:
+            img, params, baseline_score, pipeline_mode = args
+        else:
+            img, params, baseline_score = args
+            pipeline_mode = 'standard'
     except ValueError:
         return None
-
 
     if img is None:
         return None
 
     # Traitement
-    processed_img = pipeline.pipeline_complet(img, params)
+    if pipeline_mode == 'blur_clahe':
+        processed_img = pipeline.pipeline_blur_clahe(img, params)
+    else:
+        processed_img = pipeline.pipeline_complet(img, params)
 
     # Metrics
     score_tess = pipeline.get_tesseract_score(processed_img)
     baseline_score = baseline_score if baseline_score is not None else 0.0
     score_delta = score_tess - baseline_score
     score_sharp = pipeline.get_sharpness(processed_img)
-    score_cont = pipeline.get_contrast(processed_img)
+    score_cnr = pipeline.get_cnr_quality(processed_img) # CNR
 
-    return score_delta, score_tess, score_sharp, score_cont
+    return score_delta, score_tess, score_sharp, score_cnr
 
 
 # ============================================================
 # EVALUATION DU pipeline (GPU ou CPU)
 # ============================================================
 
-def evaluate_pipeline(images, baseline_scores, params, point_id=0):
+def evaluate_pipeline(images, baseline_scores, params, point_id=0, pipeline_mode='standard'):
     """Évalue le pipeline sur un ensemble d'images.
 
     Args:
@@ -142,6 +148,7 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
         baseline_scores: Liste des scores de base (OCR sur images originales)
         params: Dictionnaire de paramètres du pipeline
         point_id: ID du point d'optimisation (pour le logging)
+        pipeline_mode: 'standard' ou 'blur_clahe'
 
     Returns:
         (avg_delta, avg_abs, avg_sharp, avg_cont)
@@ -151,10 +158,14 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
         return 0, 0, 0, 0
 
     # STRATÉGIE ADAPTATIVE :
-    # - Si CUDA : traitement séquentiel sur GPU
-    # - Si CPU : multiprocessing parallèle
+    # - Si CUDA : traitement séquentiel sur GPU (Uniquement pour mode standard pour l'instant)
+    # - Si CPU ou Blur_CLAHE : multiprocessing parallèle
 
-    if pipeline.USE_CUDA:
+    # Note: Blur_CLAHE utilise des fonctions CPU (inpaint), donc on force le CPU multiprocessing
+    # sauf si on a une implémentation GPU complète.
+    use_cuda_path = pipeline.USE_CUDA and pipeline_mode == 'standard'
+
+    if use_cuda_path:
         # MODE GPU : Pipeline séquentiel + Métriques parallèles
         # Le GPU ne peut pas être partagé, mais le calcul OCR CPU peut être parallélisé
 
@@ -180,7 +191,7 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
         # PHASE 3: Accumulation des résultats
         global _time_logger
 
-        for i, (tess_abs, sharp, cont, t_tess, t_sharp, t_cont) in enumerate(metrics_results):
+        for i, (tess_abs, sharp, cnr_score, t_tess, t_metrics, _) in enumerate(metrics_results):
             baseline = (
                 baseline_scores[i] if i < len(baseline_scores)
                 else 0.0
@@ -190,7 +201,7 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
             if _time_logger is not None:
                 # Temps CUDA : moyenne du batch (approximation)
                 t_cuda_cpu = t_pipeline_avg
-                t_total = t_cuda_cpu + t_tess + t_sharp + t_cont
+                t_total = t_cuda_cpu + t_tess + t_metrics
 
                 _time_logger.log(
                     point_id=point_id,
@@ -198,25 +209,25 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
                     temps_total=t_total,
                     temps_cuda=t_cuda_cpu,
                     temps_tess=t_tess,
-                    temps_sharp=t_sharp,
-                    temps_cont=t_cont,
+                    temps_sharp=t_metrics, # Renommé implicitement
+                    temps_cont=0,
                     score_tess=tess_abs,
                     score_sharp=sharp,
-                    score_cont=cont
+                    score_cont=cnr_score # C'est le CNR
                 )
 
             # Accumulation résultats
             list_abs.append(tess_abs)
             list_delta.append(tess_abs - baseline)
             list_sharp.append(sharp)
-            list_cont.append(cont)
+            list_cont.append(cnr_score) # list_cont stocke maintenant CNR
 
     # ======================
     # MODE CPU (multiprocessing)
     # ======================
     else:
         # zip_longest sécurise les tailles différentes
-        pool_args = zip_longest(images, repeat(params), baseline_scores, fillvalue=0.0)
+        pool_args = zip_longest(images, repeat(params), baseline_scores, repeat(pipeline_mode), fillvalue=None)
 
         # Limite raisonnable : ne jamais dépasser os.cpu_count()
         max_workers = os.cpu_count()
@@ -233,18 +244,24 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
             list_delta, list_abs, list_sharp, list_cont = zip(*valid)
 
         except Exception as e:
-            print(f"[optimizer_chat] Erreur multiprocessing → fallback séquentiel : {e}")
+            print(f"[optimizer] Erreur multiprocessing → fallback séquentiel ({e})")
             list_delta, list_abs, list_sharp, list_cont = [], [], [], []
 
             for i, img in enumerate(images):
                 baseline = baseline_scores[i] if i < len(baseline_scores) else 0.0
-                processed_img = pipeline.pipeline_complet(img, params)
+                
+                if pipeline_mode == 'blur_clahe':
+                    processed_img = pipeline.pipeline_blur_clahe(img, params)
+                else:
+                    processed_img = pipeline.pipeline_complet(img, params)
+                    
                 tess_abs = pipeline.get_tesseract_score(processed_img)
+                cnr_val = pipeline.get_cnr_quality(processed_img) # CNR explicit
 
                 list_abs.append(tess_abs)
                 list_delta.append(tess_abs - baseline)
                 list_sharp.append(pipeline.get_sharpness(processed_img))
-                list_cont.append(pipeline.get_contrast(processed_img))
+                list_cont.append(cnr_val)
 
     # ======================
     # MOYENNES
@@ -253,7 +270,7 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0):
         sum(list_delta) / len(list_delta),
         sum(list_abs) / len(list_abs),
         sum(list_sharp) / len(list_sharp),
-        sum(list_cont) / len(list_cont)
+        sum(list_cont) / len(list_cont) # Moyenne CNR
     )
 
 
@@ -348,7 +365,8 @@ def params_to_tuple(params):
 
 def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
                        fixed_params, callback=None, cancellation_event=None,
-                       verbose_timing=True, enable_time_logging=True):
+                       verbose_timing=True, enable_time_logging=True,
+                       pipeline_mode='standard'):
     """Screening Sobol pur (Design of Experiments).
 
     Génère n_points avec une séquence Sobol et évalue tous sans optimisation.
@@ -366,6 +384,7 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
         cancellation_event: threading.Event() pour annulation (optionnel)
         verbose_timing: DÉPRÉCIÉ - Les temps sont maintenant sauvegardés dans un CSV
         enable_time_logging: Si True, sauvegarde les temps dans un fichier CSV
+        pipeline_mode: 'standard' ou 'blur_clahe'
 
     Returns:
         Tuple (best_params_dict, csv_filename)
@@ -373,7 +392,7 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
     from scipy.stats import qmc
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = f"screening_sobol_{n_points}pts_{timestamp}.csv"
+    csv_filename = f"screening_sobol_{pipeline_mode}_{n_points}pts_{timestamp}.csv"
 
     # Initialiser le logger de temps
     global _time_logger
@@ -382,7 +401,7 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
     else:
         _time_logger = None
 
-    print(f"\n🔍 SCREENING SOBOL: Génération de {n_points} points")
+    print(f"\n🔍 SCREENING SOBOL ({pipeline_mode}): Génération de {n_points} points")
 
     # Préparer les bornes pour Sobol
     param_names = list(param_ranges.keys())
@@ -402,11 +421,18 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
         'denoise_h': 'denoise_h',
         'noise_threshold': 'noise_threshold',
         'bin_block': 'bin_block_size',
-        'bin_c': 'bin_c'
+        'bin_c': 'bin_c',
+        # Nouveaux params Blur/CLAHE
+        'inp_line_h': 'inp_line_h',
+        'inp_line_v': 'inp_line_v',
+        'bg_dilate': 'bg_dilate',
+        'bg_blur': 'bg_blur',
+        'clahe_clip': 'clahe_clip',
+        'clahe_tile': 'clahe_tile'
     }
 
     csv_headers = ['point_id', 'score_tesseract_delta', 'score_tesseract',
-                   'score_nettete', 'score_contraste']
+                   'score_nettete', 'score_cnr']
     for p in param_names:
         csv_headers.append(header_map.get(p, p))
 
@@ -415,6 +441,46 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
         writer.writerow(csv_headers)
 
     print(f"📄 Fichier de résultats: {csv_filename}")
+
+    # ============================================================
+    # SAUVEGARDE CONFIGURATION RUN
+    # ============================================================
+    config_filename = csv_filename.replace(".csv", "_config.csv")
+    try:
+        with open(config_filename, 'w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f, delimiter=';')
+            w.writerow(["Category", "Key", "Value_Min_or_Fixed", "Value_Max"])
+            
+            # 1. Info Globales
+            w.writerow(["Info", "Pipeline Mode", pipeline_mode, ""])
+            w.writerow(["Info", "Algorithm", "Sobol Screening", ""])
+            w.writerow(["Info", "N Points", n_points, ""])
+            w.writerow(["Info", "Timestamp", timestamp, ""])
+            
+            # 2. Paramètres Actifs (Ranges)
+            for k, v in param_ranges.items():
+                w.writerow(["Range", k, v[0], v[1]])
+                
+            # 3. Paramètres Fixes
+            for k, v in fixed_params.items():
+                w.writerow(["Fixed", k, v, ""])
+
+            # 4. Baseline Stats
+            if baseline_scores:
+                b_mean = sum(baseline_scores) / len(baseline_scores)
+                b_min = min(baseline_scores)
+                b_max = max(baseline_scores)
+                w.writerow(["Baseline", "Mean Score", f"{b_mean:.2f}", ""])
+                w.writerow(["Baseline", "Min Score", f"{b_min:.2f}", ""])
+                w.writerow(["Baseline", "Max Score", f"{b_max:.2f}", ""])
+                w.writerow(["Baseline", "N Images", len(baseline_scores), ""])
+            else:
+                w.writerow(["Baseline", "Stats", "N/A", ""])
+
+        print(f"📄 Fichier de configuration: {config_filename}")
+        
+    except Exception as e:
+        print(f"⚠️ Erreur sauvegarde config: {e}")
 
     # Évaluer chaque point
     best_score = 0
@@ -433,37 +499,56 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
         params = fixed_params.copy()
         for i, param_name in enumerate(param_names):
             val = sample[i]
-            if param_name == 'norm_kernel':
-                params['norm_kernel'] = int(val) * 2 + 1
-            elif param_name == 'bin_block':
+            # Conversion int/float selon le type de param
+            if param_name in ['norm_kernel', 'bin_block', 'bg_dilate', 'bg_blur']:
+                # Doit être impair
+                params[param_name] = int(val) * 2 + 1
+            elif param_name in ['line_h', 'line_v', 'inp_line_h', 'inp_line_v', 'clahe_tile']:
+                params[param_name] = int(val)
+            elif param_name == 'bin_block_size': # alias
                 params['bin_block_size'] = int(val) * 2 + 1
-            elif param_name == 'line_h':
+            elif param_name == 'line_h_size': # alias
                 params['line_h_size'] = int(val)
-            elif param_name == 'line_v':
+            elif param_name == 'line_v_size': # alias
                 params['line_v_size'] = int(val)
-            elif param_name in ['denoise_h', 'noise_threshold', 'bin_c']:
-                params[param_name] = val
             else:
+                # Floats: denoise_h, noise_threshold, bin_c, clahe_clip
                 params[param_name] = val
 
-        # Évaluer (les temps sont sauvegardés dans le fichier CSV si enable_time_logging=True)
+        # Map ancien noms vers nouveaux noms attendus par pipeline (si nécessaire)
+        # Pour standard: line_h -> line_h_size
+        if pipeline_mode == 'standard':
+            if 'line_h' in params: params['line_h_size'] = params.pop('line_h')
+            if 'line_v' in params: params['line_v_size'] = params.pop('line_v')
+            if 'bin_block' in params: params['bin_block_size'] = params.pop('bin_block')
+            
+        # Pour blur_clahe, les noms clés dans params correspondent déjà aux args de la fonction 
+        # (inp_line_h, etc.) sauf si on a fait des mappings dans GUI.
+        # On assume que GUI envoie 'inp_line_h' etc.
+
+        # Évaluer
         avg_delta, avg_abs, avg_sharp, avg_cont = evaluate_pipeline(
-            images, baseline_scores, params, point_id=idx+1
+            images, baseline_scores, params, point_id=idx+1, pipeline_mode=pipeline_mode
         )
 
         # Ajouter au buffer CSV
         row_data = [idx + 1, avg_delta, avg_abs, avg_sharp, avg_cont]
         for p in param_names:
-            if p == 'norm_kernel':
-                row_data.append(params.get('norm_kernel'))
-            elif p == 'bin_block':
-                row_data.append(params.get('bin_block_size'))
-            elif p == 'line_h':
-                row_data.append(params.get('line_h_size'))
-            elif p == 'line_v':
-                row_data.append(params.get('line_v_size'))
-            else:
-                row_data.append(params.get(p))
+            # Récupérer la valeur "transformée" ou brute
+            # Attention: ici on veut logger la valeur "source" (celle de l'optimiseur) 
+            # ou la valeur "finale" ? Le header correspond aux noms optimizer.
+            # On va logger la valeur telle qu'utilisée par le pipeline si possible, 
+            # ou la valeur du sample.
+            # Par simplicité, on log la valeur params[mapped_name] si dispo, sinon sample.
+            
+            # Mapping inverse rapide pour retrouver la clé dans 'params'
+            mapped_key = p
+            if p == 'line_h': mapped_key = 'line_h_size'
+            elif p == 'line_v': mapped_key = 'line_v_size'
+            elif p == 'bin_block': mapped_key = 'bin_block_size'
+            
+            val_to_log = params.get(mapped_key, sample[param_names.index(p)])
+            row_data.append(val_to_log)
 
         csv_buffer.append(row_data)
 
@@ -492,7 +577,7 @@ def run_sobol_screening(images, baseline_scores, n_points, param_ranges,
                 'tesseract_delta': avg_delta,
                 'tesseract': avg_abs,
                 'nettete': avg_sharp,
-                'contraste': avg_cont
+                'cnr': avg_cont  # avg_cont contient maintenant le CNR
             }
             callback(idx, scores_dict, params)
 
