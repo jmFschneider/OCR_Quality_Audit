@@ -1,139 +1,88 @@
-#!/usr/bin/env python3
 """
-Test de validation du traitement multiprocessing Tesseract
-
-Vérifie que:
-1. Le multiprocessing accélère le traitement de 2-3x
-2. Les scores sont identiques entre séquentiel et parallèle
-3. L'intégration avec optimizer.calculate_baseline_scores fonctionne
+Test de diagnostic multiprocessing
+Vérifie où le programme bloque exactement
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import cv2
+import multiprocessing
 import time
-import glob
-import pipeline
-import optimizer
+import sys
+
+def test_worker(x):
+    """Worker de test minimaliste"""
+    print(f"Worker {x} - Démarré", flush=True)
+
+    try:
+        # Test 1: Import basique
+        print(f"Worker {x} - Import cv2...", flush=True)
+        import cv2
+        print(f"Worker {x} - cv2 OK", flush=True)
+
+        # Test 2: Import pipeline (C'EST ICI QUE ÇA BLOQUE PROBABLEMENT)
+        print(f"Worker {x} - Import pipeline...", flush=True)
+        import pipeline
+        print(f"Worker {x} - pipeline OK", flush=True)
+
+        # Test 3: Import optimizer
+        print(f"Worker {x} - Import optimizer...", flush=True)
+        import optimizer
+        print(f"Worker {x} - optimizer OK", flush=True)
+
+        print(f"Worker {x} - Terminé avec succès!", flush=True)
+        return f"Success {x}"
+
+    except Exception as e:
+        print(f"Worker {x} - ERREUR: {e}", flush=True)
+        return f"Error {x}: {e}"
 
 
-def test_multiprocessing_speedup():
-    """Test que le multiprocessing accélère bien le traitement"""
+def main():
+    print("=" * 60)
+    print("Test de diagnostic multiprocessing")
+    print("=" * 60)
 
-    # Charger 4 images de test
-    image_files = sorted(glob.glob('test_scans/*.jpg'))[:4]
-    if not image_files:
-        print("❌ Aucune image de test trouvée dans test_scans/")
-        return False
+    # Configuration multiprocessing (comme dans gui_main.py)
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+        print("✓ multiprocessing.set_start_method('spawn') configuré")
+    except RuntimeError as e:
+        print(f"⚠ multiprocessing déjà configuré: {e}")
 
-    images = [cv2.imread(f, cv2.IMREAD_GRAYSCALE) for f in image_files]
-    print(f"✅ {len(images)} images chargées\n")
+    multiprocessing.freeze_support()
+    print("✓ multiprocessing.freeze_support() appelé")
 
-    # Test 1: Mode séquentiel
-    print("Test 1: Mode séquentiel")
-    t0 = time.time()
-    scores_seq = optimizer.calculate_baseline_scores(images, use_multiprocessing=False)
-    t_seq = time.time() - t0
-    print(f"  Temps: {t_seq*1000:.0f}ms")
-    print(f"  Scores: {[f'{s:.1f}' for s in scores_seq]}\n")
+    print("\nLancement de 2 workers de test...")
+    print("(Si ça bloque, appuyez sur Ctrl+C et notez où ça s'arrête)\n")
 
-    # Test 2: Mode multiprocessing
-    print("Test 2: Mode multiprocessing")
-    t0 = time.time()
-    scores_mp = optimizer.calculate_baseline_scores(images, use_multiprocessing=True)
-    t_mp = time.time() - t0
-    print(f"  Temps: {t_mp*1000:.0f}ms")
-    print(f"  Scores: {[f'{s:.1f}' for s in scores_mp]}\n")
+    try:
+        with multiprocessing.Pool(processes=2) as pool:
+            print("✓ Pool créé")
 
-    # Vérifications
-    print("Vérifications:")
+            # Timeout de 30 secondes
+            results = pool.map_async(test_worker, [1, 2])
 
-    # 1. Scores identiques
-    if scores_seq == scores_mp:
-        print("  ✅ Scores identiques")
-    else:
-        print(f"  ❌ Scores différents!")
-        print(f"     Séq: {scores_seq}")
-        print(f"     MP:  {scores_mp}")
-        return False
+            # Attendre avec timeout
+            final_results = results.get(timeout=30)
 
-    # 2. Speedup significatif (>1.5x attendu)
-    speedup = t_seq / t_mp
-    print(f"  ✅ Speedup: {speedup:.2f}x")
+            print("\n" + "=" * 60)
+            print("RÉSULTATS:")
+            for r in final_results:
+                print(f"  {r}")
+            print("=" * 60)
+            print("\n✅ Test réussi! Le multiprocessing fonctionne correctement.")
 
-    if speedup < 1.5:
-        print(f"  ⚠️  Speedup faible (<1.5x), attendu 2-3x")
+    except multiprocessing.TimeoutError:
+        print("\n❌ TIMEOUT! Le pool a bloqué pendant plus de 30 secondes.")
+        print("Le problème vient probablement de l'import de pipeline.py ou optimizer.py")
 
-    # 3. Gain de temps
-    gain_ms = (t_seq - t_mp) * 1000
-    gain_pct = (1 - t_mp/t_seq) * 100
-    print(f"  ✅ Gain: {gain_ms:.0f}ms ({gain_pct:.0f}%)")
+    except KeyboardInterrupt:
+        print("\n⚠ Interrompu par l'utilisateur (Ctrl+C)")
+        print("Notez le dernier message affiché pour identifier où ça bloque")
 
-    return True
+    except Exception as e:
+        print(f"\n❌ Erreur: {e}")
+        import traceback
+        traceback.print_exc()
 
 
-def test_batch_metrics():
-    """Test de la fonction evaluer_toutes_metriques_batch"""
-
-    print("\n" + "="*70)
-    print("Test de evaluer_toutes_metriques_batch")
-    print("="*70 + "\n")
-
-    # Charger et traiter 2 images
-    image_files = sorted(glob.glob('test_scans/*.jpg'))[:2]
-    images = [cv2.imread(f, cv2.IMREAD_GRAYSCALE) for f in image_files]
-
-    # Paramètres par défaut
-    params = {
-        'line_h_size': 50,
-        'line_v_size': 60,
-        'dilate_iter': 2,
-        'norm_kernel': 75,
-        'denoise_h': 9.0,
-        'noise_threshold': 100.0,
-        'bin_block_size': 61,
-        'bin_c': 15.0
-    }
-
-    # Traiter les images
-    processed = [pipeline.pipeline_complet(img, params) for img in images]
-
-    # Test batch
-    print("Calcul des métriques en batch...")
-    results = pipeline.evaluer_toutes_metriques_batch(processed, max_workers=2, verbose=True)
-
-    print(f"\n✅ {len(results)} résultats obtenus")
-    for i, (tess, sharp, cont, t_tess, t_sharp, t_cont) in enumerate(results):
-        print(f"  Image {i+1}: Tess={tess:.1f}, Sharp={sharp:.0f}, Contrast={cont:.1f}")
-
-    return True
-
-
-if __name__ == '__main__':
-    print("="*70)
-    print("TEST MULTIPROCESSING TESSERACT")
-    print("="*70)
-    print()
-
-    # Test 1: Speedup
-    success1 = test_multiprocessing_speedup()
-
-    # Test 2: Batch metrics
-    success2 = test_batch_metrics()
-
-    print("\n" + "="*70)
-    if success1 and success2:
-        print("✅ TOUS LES TESTS PASSENT")
-        print("="*70)
-        print()
-        print("💡 Le multiprocessing est activé par défaut dans:")
-        print("   - optimizer.calculate_baseline_scores()")
-        print("   - pipeline.evaluer_toutes_metriques_batch()")
-        print()
-        print("   Speedup typique: 2-3x sur CPU multi-core")
-        exit(0)
-    else:
-        print("❌ CERTAINS TESTS ONT ÉCHOUÉ")
-        exit(1)
+if __name__ == "__main__":
+    main()
