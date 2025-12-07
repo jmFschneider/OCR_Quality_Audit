@@ -1,33 +1,40 @@
 # Requirements pour OCR Quality Audit - Optimiseur de Pipeline d'Image
 # Installation : pip install -r requirements.txt
+#
+# IMPORTANT: Sur Ubuntu avec CUDA, utilisez requirements_ubuntu.txt
 
 # ===================================================================
-# CORE DEPENDENCIES - Optimiseur Principal (gui_optimizer_v3_ultim.py)
+# CORE DEPENDENCIES - Optimiseur Principal
 # ===================================================================
 
 # Traitement d'image
-opencv-python>=4.8.0       # OpenCV avec support OpenCL/UMat pour GPU
-numpy>=1.23.0              # Opérations matricielles
+# ATTENTION: N'installez PAS opencv-python sur Ubuntu CUDA!
+# opencv-python>=4.8.0     # Windows/macOS uniquement
+# Ubuntu: OpenCV 4.8.0 doit être compilé avec CUDA 11.8
+numpy==1.26.4              # Version compatible avec OpenCV CUDA compilé
 
 # OCR
-pytesseract>=0.3.10        # Wrapper Python pour Tesseract-OCR
+pytesseract==0.3.13        # Wrapper Python pour Tesseract-OCR
 # Note: Tesseract-OCR doit être installé séparément
 # Windows: https://github.com/UB-Mannheim/tesseract/wiki
-# Linux: apt-get install tesseract-ocr
+# Linux: apt-get install tesseract-ocr tesseract-ocr-fra
 # macOS: brew install tesseract
 
+# Image processing
+pillow==12.0.0             # PIL pour manipulation d'images
+
 # Optimisation
-optuna>=3.4.0              # Framework d'optimisation Bayésienne
-scipy>=1.10.0              # Algorithmes d'optimisation (L-BFGS-B, Nelder-Mead, Sobol)
+optuna==4.6.0              # Framework d'optimisation Bayésienne
+scipy==1.11.3              # Algorithmes d'optimisation (L-BFGS-B, Nelder-Mead, Sobol)
 
 # ===================================================================
 # ANALYSIS DEPENDENCIES - Script d'analyse (analyze_screening.py)
 # ===================================================================
 
 # Analyse de données
-pandas>=1.5.0              # Manipulation de données tabulaires
-matplotlib>=3.6.0          # Visualisations
-seaborn>=0.12.0            # Visualisations statistiques avancées
+pandas==2.1.1              # Manipulation de données tabulaires
+matplotlib==3.8.0          # Visualisations
+seaborn==0.12.0            # Visualisations statistiques avancées
 
 # ===================================================================
 # PHASE 3B - Tesseract Batch Processing
@@ -52,33 +59,34 @@ tifffile>=2023.7.0         # Création TIFF multi-page pour batch Tesseract
 # VERSIONS TESTÉES (Configuration de référence)
 # ===================================================================
 # Python: 3.10+
-# opencv-python: 4.8.1.78 (avec support OpenCL)
-# numpy: 1.24.3
-# pytesseract: 0.3.10
-# optuna: 3.4.0
+# OpenCV: 4.8.0 (compilé avec CUDA 11.8 sur Ubuntu)
+# numpy: 1.26.4
+# pytesseract: 0.3.13
+# pillow: 12.0.0
+# optuna: 4.6.0
 # scipy: 1.11.3
 # pandas: 2.1.1
 # matplotlib: 3.8.0
-# seaborn: 0.13.0
+# seaborn: 0.12.0
 
 # ===================================================================
 # NOTES D'INSTALLATION
 # ===================================================================
 
-# 1. Installation de base :
-#    pip install -r requirements.txt
+# UBUNTU 22.04 avec CUDA:
+# 1. Installez les dépendances système d'abord
+# 2. Compilez OpenCV 4.8.0 avec CUDA 11.8 (voir docs/installation/)
+# 3. pip3 install --user -r requirements_ubuntu.txt
+# 4. Vérifiez CUDA: python3 -c "import cv2; print(cv2.cuda.getCudaEnabledDeviceCount())"
 
-# 2. Pour GPU (OpenCL) :
-#    - Assurez-vous d'avoir les pilotes GPU à jour
-#    - opencv-python inclut déjà le support OpenCL
-#    - Vérifiez l'activation avec : cv2.ocl.haveOpenCL()
+# WINDOWS/MACOS:
+# 1. Décommentez la ligne opencv-python ci-dessus
+# 2. pip install -r requirements.txt
+# 3. Installez Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
 
-# 3. Pour Tesseract :
-#    Windows : https://github.com/UB-Mannheim/tesseract/wiki
-#    Puis configurez le chemin dans gui_optimizer_v3_ultim.py ligne 45
-
-# 4. Environnement virtuel recommandé :
-#    python -m venv .venv
-#    .venv\Scripts\activate  (Windows)
-#    source .venv/bin/activate  (Linux/macOS)
-#    pip install -r requirements.txt
+# PROTECTION OpenCV CUDA (Ubuntu):
+# Créez pip-constraints.txt pour bloquer opencv-python:
+#   opencv-python==999.0.0
+#   opencv-python-headless==999.0.0
+#   opencv-contrib-python==999.0.0
+# Puis: export PIP_CONSTRAINT=pip-constraints.txt

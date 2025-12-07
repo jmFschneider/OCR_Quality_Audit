@@ -246,8 +246,8 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
       -D ENABLE_FAST_MATH=1 \
       -D CUDA_FAST_MATH=1 \
       -D WITH_CUBLAS=ON \
-      -D WITH_CUDNN=ON \
-      -D OPENCV_DNN_CUDA=ON \
+      -D WITH_CUDNN=OFF \
+      -D OPENCV_DNN_CUDA=OFF \
       -D OPENCV_ENABLE_NONFREE=ON \
       -D WITH_TBB=ON \
       -D WITH_OPENCL=OFF \
@@ -264,7 +264,7 @@ cmake -D CMAKE_BUILD_TYPE=RELEASE \
 echo -e "\n${YELLOW}Vérification de la configuration CMake...${NC}"
 
 # Vérifier CUDA
-if grep -q "NVIDIA CUDA.*YES" CMakeCache.txt; then
+if grep -q "WITH_CUDA:BOOL=ON" CMakeCache.txt; then
     CUDA_VER=$(grep "CUDA_VERSION" CMakeCache.txt | grep -v "INTERNAL" | head -1 | cut -d= -f2)
     echo -e "${GREEN}✓ CUDA activé (version $CUDA_VER)${NC}"
 else

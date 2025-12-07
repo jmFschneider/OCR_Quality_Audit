@@ -1,7 +1,10 @@
 # Dépendances pour le script d'analyse des résultats de screening
 # Installation : pip install -r requirements_analysis.txt
+#
+# Ce fichier est un sous-ensemble de requirements_ubuntu.txt
+# Utilisez-le si vous n'avez besoin que de l'analyse sans OCR
 
-pandas>=1.5.0
-numpy>=1.23.0
-matplotlib>=3.6.0
-seaborn>=0.12.0
+numpy==1.26.4              # Opérations matricielles
+pandas==2.1.1              # Manipulation de données tabulaires
+matplotlib==3.8.0          # Graphiques
+seaborn==0.12.0            # Visualisations statistiques avancées
