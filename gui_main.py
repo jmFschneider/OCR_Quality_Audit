@@ -15,7 +15,18 @@ import csv
 import platform
 import multiprocessing
 
-# Imports des modules locaux
+# CRITIQUE: Configurer multiprocessing AVANT d'importer pipeline/optimizer
+# pour éviter les deadlocks avec le mode blur_clahe
+# ATTENTION: Ceci doit être au niveau module, pas dans main()
+if platform.system() != 'Windows':
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+        print("[DEBUG] multiprocessing.set_start_method('spawn') configuré")
+    except RuntimeError as e:
+        # Déjà défini, c'est OK
+        print(f"[DEBUG] spawn déjà configuré ou impossible: {e}")
+
+# Imports des modules locaux (APRÈS configuration multiprocessing)
 import pipeline
 import optimizer
 import scipy_optimizer
@@ -835,15 +846,8 @@ class OptimizerGUI:
 def main():
     """Point d'entrée principal."""
     print("[DEBUG] Démarrage de l'application...")
-    
-    # Configuration multiprocessing
-    if platform.system() != 'Windows':
-        try:
-            multiprocessing.set_start_method('spawn')
-            print("[DEBUG] multiprocessing.set_start_method('spawn') OK")
-        except RuntimeError:
-            pass
 
+    # Configuration multiprocessing (déjà fait au niveau module)
     multiprocessing.freeze_support()
 
     # Vérifier dossier

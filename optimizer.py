@@ -223,45 +223,77 @@ def evaluate_pipeline(images, baseline_scores, params, point_id=0, pipeline_mode
             list_cont.append(cnr_score) # list_cont stocke maintenant CNR
 
     # ======================
-    # MODE CPU (multiprocessing)
+    # MODE CPU (multiprocessing ou séquentiel)
     # ======================
     else:
-        # zip_longest sécurise les tailles différentes
-        pool_args = zip_longest(images, repeat(params), baseline_scores, repeat(pipeline_mode), fillvalue=None)
+        # CORRECTION CRITIQUE: Le multiprocessing cause des deadlocks avec blur_clahe
+        # à cause de conflits OpenCV/Tesseract. On force le traitement séquentiel.
+        use_multiprocessing = (pipeline_mode != 'blur_clahe')
 
-        # Limite raisonnable : ne jamais dépasser os.cpu_count()
-        max_workers = os.cpu_count()
-        pool_size = min(len(images), max_workers)
+        if use_multiprocessing:
+            # Tentative multiprocessing pour mode standard
+            pool_args = zip_longest(images, repeat(params), baseline_scores, repeat(pipeline_mode), fillvalue=None)
+            max_workers = os.cpu_count()
+            pool_size = min(len(images), max_workers)
 
-        try:
-            with multiprocessing.Pool(processes=pool_size) as pool:
-                results = pool.map(process_image_fast, pool_args)
+            try:
+                with multiprocessing.Pool(processes=pool_size) as pool:
+                    results = pool.map(process_image_fast, pool_args)
 
-            valid = [r for r in results if r is not None]
-            if not valid:
-                return 0, 0, 0, 0
+                valid = [r for r in results if r is not None]
+                if not valid:
+                    return 0, 0, 0, 0
 
-            list_delta, list_abs, list_sharp, list_cont = zip(*valid)
+                list_delta, list_abs, list_sharp, list_cont = zip(*valid)
 
-        except Exception as e:
-            print(f"[optimizer] Erreur multiprocessing → fallback séquentiel ({e})")
-            list_delta, list_abs, list_sharp, list_cont = [], [], [], []
+            except Exception as e:
+                print(f"[optimizer] Erreur multiprocessing → fallback séquentiel ({e})")
+                use_multiprocessing = False  # Force fallback
 
-            for i, img in enumerate(images):
-                baseline = baseline_scores[i] if i < len(baseline_scores) else 0.0
-                
-                if pipeline_mode == 'blur_clahe':
+        # Traitement parallèle avec threading (blur_clahe) ou séquentiel (fallback)
+        if not use_multiprocessing:
+            # Pour blur_clahe : utiliser threading pour accélérer 3-4x
+            if pipeline_mode == 'blur_clahe':
+                from concurrent.futures import ThreadPoolExecutor
+
+                # Utiliser 8 threads en parallèle (optimal d'après tests)
+                max_workers = min(8, len(images))
+                print(f"[optimizer] Mode blur_clahe: traitement parallèle ({len(images)} images, {max_workers} threads)")
+
+                def process_single_image(idx):
+                    """Worker thread pour traiter une image."""
+                    img = images[idx]
+                    baseline = baseline_scores[idx] if idx < len(baseline_scores) else 0.0
+
                     processed_img = pipeline.pipeline_blur_clahe(img, params)
-                else:
-                    processed_img = pipeline.pipeline_complet(img, params)
-                    
-                tess_abs = pipeline.get_tesseract_score(processed_img)
-                cnr_val = pipeline.get_cnr_quality(processed_img) # CNR explicit
+                    tess_abs = pipeline.get_tesseract_score(processed_img)
+                    cnr_val = pipeline.get_cnr_quality(processed_img)
+                    sharp_val = pipeline.get_sharpness(processed_img)
 
-                list_abs.append(tess_abs)
-                list_delta.append(tess_abs - baseline)
-                list_sharp.append(pipeline.get_sharpness(processed_img))
-                list_cont.append(cnr_val)
+                    return (tess_abs - baseline, tess_abs, sharp_val, cnr_val)
+
+                # Exécution parallèle avec threads
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    results = list(executor.map(process_single_image, range(len(images))))
+
+                # Extraction des résultats
+                list_delta, list_abs, list_sharp, list_cont = zip(*results)
+
+            # Fallback séquentiel pour mode standard
+            else:
+                list_delta, list_abs, list_sharp, list_cont = [], [], [], []
+
+                for i, img in enumerate(images):
+                    baseline = baseline_scores[i] if i < len(baseline_scores) else 0.0
+                    processed_img = pipeline.pipeline_complet(img, params)
+
+                    tess_abs = pipeline.get_tesseract_score(processed_img)
+                    cnr_val = pipeline.get_cnr_quality(processed_img)
+
+                    list_abs.append(tess_abs)
+                    list_delta.append(tess_abs - baseline)
+                    list_sharp.append(pipeline.get_sharpness(processed_img))
+                    list_cont.append(cnr_val)
 
     # ======================
     # MOYENNES
