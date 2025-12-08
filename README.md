@@ -4,11 +4,13 @@ Outil d'optimisation de paramètres de prétraitement d'images pour améliorer l
 
 ## 🚀 Caractéristiques principales
 
+- **Package Python installable** : Utilisable comme bibliothèque dans d'autres projets
 - **Architecture modulaire** : Code séparé en modules `pipeline.py`, `optimizer.py`, et `gui_main.py`
 - **Accélération GPU CUDA** : Support natif NVIDIA (GTX 1080 Ti, RTX, etc.) pour le traitement d'images
 - **Optimisation Sobol** : Screening quasi-Monte Carlo pour exploration efficace de l'espace des paramètres
 - **Logging des temps** : Sauvegarde automatique des métriques de performance en CSV
 - **Interface graphique** : GUI Tkinter intuitive avec sélecteur d'exposant Sobol (2^n)
+- **Multi-plateforme** : Fonctionne sur Windows et Linux (Ubuntu) avec détection automatique CUDA
 
 ## 📊 Performance
 
@@ -31,7 +33,25 @@ Outil d'optimisation de paramètres de prétraitement d'images pour améliorer l
 - CUDA Toolkit 11.x (optionnel, pour GPU)
 - Tesseract OCR
 
-### Ubuntu/Linux
+### Installation du package
+
+Le projet peut être installé comme package Python pour être utilisé dans d'autres projets :
+
+```bash
+# Cloner le repository
+git clone https://github.com/jmFschneider/OCR_Quality_Audit.git
+cd OCR_Quality_Audit
+
+# Installer en mode éditable (développement)
+pip install -e .
+
+# OU installer avec les dépendances Windows
+pip install -e ".[windows]"
+```
+
+### Installation pour utilisation standalone
+
+#### Ubuntu/Linux
 ```bash
 # 1. Cloner le repository
 git clone https://github.com/jmFschneider/OCR_Quality_Audit.git
@@ -40,39 +60,76 @@ cd OCR_Quality_Audit
 # 2. Installer les dépendances système
 sudo apt install tesseract-ocr tesseract-ocr-fra python3-tk
 
-# 3. Installer les dépendances Python
-pip install -r requirements_ubuntu.txt
+# 3. Installer le package
+pip install -e .
 
 # 4. Pour support GPU (optionnel)
 # Compiler OpenCV avec CUDA (voir docs/archive/ubuntu-migration/)
 ```
 
-### Windows
+#### Windows
 ```bash
 # 1. Installer Tesseract
 # Télécharger depuis https://github.com/UB-Mannheim/tesseract/wiki
 
-# 2. Installer les dépendances Python
-pip install -r requirements.txt
+# 2. Cloner le repository
+git clone https://github.com/jmFschneider/OCR_Quality_Audit.git
+cd OCR_Quality_Audit
 
-# 3. Configurer le chemin Tesseract dans gui_main.py
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# 3. Installer le package avec dépendances Windows
+pip install -e ".[windows]"
 ```
+
+Note : Le chemin Tesseract est détecté automatiquement sur Windows et Linux.
 
 ## 🎯 Démarrage rapide
 
-### 1. Placer vos images
+### Utilisation comme package Python
+
+```python
+# Importer les fonctions de traitement
+from ocr_quality_audit import pipeline_complet, pipeline_blur_clahe
+import cv2
+
+# Charger et traiter une image
+image = cv2.imread("scan.jpg", cv2.IMREAD_GRAYSCALE)
+
+# Définir les paramètres
+params = {
+    'h_size': 50,
+    'v_size': 2,
+    'dilate_iter': 2,
+    'kernel_size': 50,
+    'base_h_param': 10,
+    'block_size': 15,
+    'C_constant': 10
+}
+
+# Traiter l'image
+image_traitee = pipeline_complet(image, params)
+
+# Évaluer les métriques
+from ocr_quality_audit import evaluer_toutes_metriques
+metriques = evaluer_toutes_metriques(image_traitee)
+print(metriques)  # {'tesseract': 95.2, 'sharpness': 123.4, ...}
+```
+
+Voir **[USAGE_PACKAGE.md](USAGE_PACKAGE.md)** pour plus d'exemples d'utilisation.
+
+### Utilisation de l'interface graphique
+
+#### 1. Placer vos images
 ```bash
 # Copier vos images JPG dans le dossier test_scans/
 cp /path/to/images/*.jpg test_scans/
 ```
 
-### 2. Lancer l'interface graphique
+#### 2. Lancer l'interface graphique
 ```bash
 python3 gui_main.py
 ```
 
-### 3. Utilisation de l'interface
+#### 3. Utilisation de l'interface
 1. Cliquer sur **"🔄 Rafraîchir"** pour détecter les images
 2. Cliquer sur **"📥 Charger en mémoire"** pour précharger les images
 3. Sélectionner les paramètres à optimiser (cocher/décocher)
@@ -80,14 +137,14 @@ python3 gui_main.py
 5. Cliquer sur **"▶️ Lancer Sobol"**
 6. Observer les résultats dans les logs
 
-### 4. Analyser les résultats
+#### 4. Analyser les résultats
 ```bash
 # Les résultats sont sauvegardés automatiquement :
 # - screening_sobol_XXpts_YYYYMMDD_HHMMSS.csv (scores)
 # - timing_log_YYYYMMDD_HHMMSS.csv (temps de traitement)
 
 # Analyser les temps avec le script d'analyse
-python3 analyser_temps.py
+python3 tools/analyser_temps.py
 ```
 
 ## 📁 Structure du projet
@@ -95,34 +152,43 @@ python3 analyser_temps.py
 ```
 OCR_Quality_Audit/
 ├── README.md                    # Ce fichier
-├── pipeline.py                  # Pipeline de traitement d'images (CUDA)
-├── optimizer.py                 # Algorithmes d'optimisation (Sobol, TimeLogger)
-├── gui_main.py                  # Interface graphique Tkinter
-├── analyser_temps.py            # Analyse des temps de traitement
+├── USAGE_PACKAGE.md            # Guide d'utilisation du package
+├── pyproject.toml              # Configuration du package Python
 │
-├── docs/                        # Documentation complète
-│   ├── user-guide/              # Guides utilisateur
-│   │   ├── sobol-screening.md
-│   │   ├── sobol-exponent.md
-│   │   ├── time-logging.md
-│   │   └── timing-measurement.md
-│   ├── technical/               # Documentation technique
-│   │   ├── modularization-summary.md
-│   │   └── CORRECTIONS_APPLIED.md
-│   ├── changelogs/              # Historiques des modifications
-│   └── archive/                 # Documentation obsolète (référence)
+├── src/                        # Package Python installable
+│   └── ocr_quality_audit/
+│       ├── __init__.py         # API publique du package
+│       ├── pipeline.py         # Pipeline de traitement d'images (CUDA)
+│       ├── optimizer.py        # Algorithmes d'optimisation (Sobol, TimeLogger)
+│       └── scipy_optimizer.py  # Optimisation scipy
 │
-├── tests/                       # Scripts de test
+├── gui_main.py                 # Interface graphique Tkinter (point d'entrée)
+├── pipeline.py                 # Copie pour compatibilité (à la racine)
+├── optimizer.py                # Copie pour compatibilité (à la racine)
+│
+├── tools/                      # Utilitaires
+│   ├── analyser_temps.py       # Analyse des temps de traitement
+│   └── tesseract_batch.py      # Traitement batch Tesseract
+│
+├── tests/                      # Scripts de test
 │   ├── test_time_logging.py
 │   ├── test_timing.py
-│   ├── test_sobol_exponent.py
-│   ├── test_sobol_integration.py
-│   └── test_corrections.py
+│   ├── test_blur_clahe_timing.py
+│   └── ...
 │
-└── test_scans/                  # Images à traiter (vos fichiers)
+├── docs/                       # Documentation complète
+│   ├── user-guide/             # Guides utilisateur
+│   ├── technical/              # Documentation technique
+│   ├── changelogs/             # Historiques des modifications
+│   └── archive/                # Documentation obsolète (référence)
+│
+└── test_scans/                 # Images à traiter (vos fichiers)
 ```
 
 ## 📚 Documentation
+
+### Guide principal
+- **[USAGE_PACKAGE.md](USAGE_PACKAGE.md)** : Guide complet d'utilisation du package Python
 
 ### Guides utilisateur
 - **[Guide Sobol Screening](docs/user-guide/sobol-screening.md)** : Utilisation de l'optimisation Sobol
@@ -210,7 +276,7 @@ Colonnes : `timestamp`, `point_id`, `image_id`, `temps_total_ms`, `temps_cuda_ms
 
 ### Analyse automatique
 ```bash
-python3 analyser_temps.py [fichier.csv]
+python3 tools/analyser_temps.py [fichier.csv]
 ```
 
 Fournit :
@@ -278,5 +344,5 @@ Pour questions ou suggestions :
 
 ---
 
-**Version** : 3.0 (Architecture modulaire + CUDA + Time Logging)
-**Dernière mise à jour** : 2025-12-03
+**Version** : 4.0 (Package Python installable + Architecture modulaire + CUDA)
+**Dernière mise à jour** : 2025-12-08
