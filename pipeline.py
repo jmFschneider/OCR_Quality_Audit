@@ -497,13 +497,13 @@ def pipeline_blur_clahe(image, params):
     _, thresh = cv2.threshold(cpu_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
     # Kernel Horizontal
-    h_size = params.get('inp_line_h', 40)
+    h_size = int(params.get('inp_line_h', 40))
     if h_size < 1: h_size = 1
     h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_size, 1))
     remove_h = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, h_kernel, iterations=2)
     
     # Kernel Vertical
-    v_size = params.get('inp_line_v', 40)
+    v_size = int(params.get('inp_line_v', 40))
     if v_size < 1: v_size = 1
     v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_size))
     remove_v = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, v_kernel, iterations=2)
@@ -524,11 +524,11 @@ def pipeline_blur_clahe(image, params):
                                             
     # --- ÉTAPE C : Normalisation par Division (Preservation Grayscale) ---
     # 1. Estimation du fond
-    dil_k = params.get('bg_dilate', 7)
+    dil_k = int(params.get('bg_dilate', 7))
     if dil_k % 2 == 0: dil_k += 1
     dilated_img = cv2.dilate(img_denoised, np.ones((dil_k, dil_k), np.uint8))
     
-    blur_k = params.get('bg_blur', 21)
+    blur_k = int(params.get('bg_blur', 21))
     if blur_k % 2 == 0: blur_k += 1
     bg_img = cv2.medianBlur(dilated_img, blur_k)
     
@@ -542,7 +542,7 @@ def pipeline_blur_clahe(image, params):
                              
     # --- ÉTAPE D : CLAHE Final ---
     clip = params.get('clahe_clip', 2.0)
-    tile = params.get('clahe_tile', 8)
+    tile = int(params.get('clahe_tile', 8))
     if tile < 1: tile = 8
     
     clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(tile, tile))
