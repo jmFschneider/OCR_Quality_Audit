@@ -213,13 +213,15 @@ def pipeline_complet(image, params):
     # 1. Suppression de lignes
     current_img = remove_lines_param(
         image,
-        params['line_h_size'],
-        params['line_v_size'],
-        params['dilate_iter']
+        int(params['line_h_size']),
+        int(params['line_v_size']),
+        int(params['dilate_iter'])
     )
 
     # 2. Normalisation par division
-    current_img = normalisation_division(current_img, params['norm_kernel'])
+    norm_k = int(params['norm_kernel'])
+    if norm_k % 2 == 0: norm_k += 1
+    current_img = normalisation_division(current_img, norm_k)
 
     # 3. Denoising adaptatif
     current_img = adaptive_denoising(
@@ -233,7 +235,7 @@ def pipeline_complet(image, params):
     if cpu_img is None:
         return None
 
-    block_size = params['bin_block_size']
+    block_size = int(params['bin_block_size'])
     if block_size % 2 == 0:
         block_size += 1
     if block_size < 3:
@@ -266,20 +268,24 @@ def pipeline_complet_timed(image, params):
     t0 = time.time()
 
     # 1. Suppression de lignes
-    current_img = remove_lines_param(image, params['line_h_size'],
-                                     params['line_v_size'], params['dilate_iter'])
+    current_img = remove_lines_param(image, int(params['line_h_size']),
+                                     int(params['line_v_size']), int(params['dilate_iter']))
 
     # 2. Normalisation par division
     current_img = ensure_cpu(current_img)
-    current_img = normalisation_division(current_img, params['norm_kernel'])
+    norm_k = int(params['norm_kernel'])
+    if norm_k % 2 == 0: norm_k += 1
+    current_img = normalisation_division(current_img, norm_k)
 
     # 3. Denoising adaptatif
     current_img = adaptive_denoising(current_img, params['denoise_h'],
                                     params.get('noise_threshold', 100))
 
     # 4. Binarisation adaptative
+    block_size = int(params['bin_block_size'])
+    if block_size % 2 == 0: block_size += 1
     result = cv2.adaptiveThreshold(current_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                    cv2.THRESH_BINARY, params['bin_block_size'], params['bin_c'])
+                                    cv2.THRESH_BINARY, block_size, params['bin_c'])
 
     temps_ms = (time.time() - t0) * 1000
     return result, temps_ms
